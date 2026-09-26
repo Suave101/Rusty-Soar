@@ -18,6 +18,8 @@ pub mod preference;
 pub mod production;
 /// Index-based RETE pattern matching engine.
 pub mod rete;
+/// Reinforcement Learning (RL) mechanism for reward-based numeric preference updates.
+pub mod rl;
 /// Semantic memory system for long-term factual knowledge storage and retrieval.
 pub mod smem;
 /// Global symbol interning table and identifier system.
