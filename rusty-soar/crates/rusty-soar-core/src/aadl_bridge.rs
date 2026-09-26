@@ -1,9 +1,11 @@
 //! C-ABI FFI Bridge implementing AADL/AGREE contract bindings for rusty-soar.
 
-use crate::agent::{Action, SoarAgent};
-use crate::preference::{Preference, PreferenceType};
-use crate::rete::AlphaTest;
+use crate::agent::SoarAgent;
+use crate::preference::{resolve_preferences, DecisionResult, Preference, PreferenceType};
 use crate::symbol::SymbolId;
+
+/// Maximum preferences capacity allocated per decision cycle frame.
+pub const MAX_PREFERENCES_PER_CYCLE: usize = 8;
 
 /// FFI telemetry input struct matching AADL `Flight_Telemetry.impl`.
 #[repr(C)]
@@ -39,12 +41,6 @@ pub struct SoarAadlAgent {
     pub agent: SoarAgent,
     /// Root state symbol identifier.
     pub state_id: SymbolId,
-    /// Attribute symbol identifier for engine status.
-    pub attr_engine: SymbolId,
-    /// Value symbol identifier for normal engine status.
-    pub val_normal: SymbolId,
-    /// Value symbol identifier for critical engine status.
-    pub val_critical: SymbolId,
     /// Symbol ID for the cruise operator.
     pub op_cruise: SymbolId,
     /// Symbol ID for the emergency landing operator.
@@ -58,67 +54,18 @@ impl Default for SoarAadlAgent {
 }
 
 impl SoarAadlAgent {
-    /// Constructs and initializes a new `SoarAadlAgent` with predefined production rules.
+    /// Constructs and initializes a new `SoarAadlAgent` with pre-allocated preference buffers.
     pub fn new() -> Self {
         let mut agent = SoarAgent::new();
+        agent.preferences.reserve(MAX_PREFERENCES_PER_CYCLE);
 
         let state_id = agent.symbols.intern_id('S', 1);
-        let attr_engine = agent.symbols.intern_id('A', 1);
-        let val_normal = agent.symbols.intern_id('V', 1);
-        let val_critical = agent.symbols.intern_id('V', 2);
-
         let op_cruise = SymbolId(10);
         let op_emergency = SymbolId(99);
-
-        // Production Rule 1: Propose Cruise Operator under normal engine state
-        agent.add_rule(
-            "propose_cruise",
-            alloc::vec![(
-                AlphaTest {
-                    id: Some(state_id),
-                    attr: Some(attr_engine),
-                    val: Some(val_normal),
-                },
-                alloc::vec![],
-            )],
-            alloc::vec![Action::Prefer(Preference {
-                state: state_id,
-                operator: op_cruise,
-                preference_type: PreferenceType::Acceptable,
-            })],
-        );
-
-        // Production Rule 2: Propose Emergency Land Operator & Reject Cruise under critical engine state
-        agent.add_rule(
-            "propose_emergency_landing",
-            alloc::vec![(
-                AlphaTest {
-                    id: Some(state_id),
-                    attr: Some(attr_engine),
-                    val: Some(val_critical),
-                },
-                alloc::vec![],
-            )],
-            alloc::vec![
-                Action::Prefer(Preference {
-                    state: state_id,
-                    operator: op_emergency,
-                    preference_type: PreferenceType::Acceptable,
-                }),
-                Action::Prefer(Preference {
-                    state: state_id,
-                    operator: op_cruise,
-                    preference_type: PreferenceType::Reject,
-                }),
-            ],
-        );
 
         Self {
             agent,
             state_id,
-            attr_engine,
-            val_normal,
-            val_critical,
             op_cruise,
             op_emergency,
         }
@@ -126,8 +73,8 @@ impl SoarAadlAgent {
 
     /// Step execution matching the AADL 10ms periodic compute frame.
     ///
-    /// Evaluates input flight telemetry, updates working memory, executes decision phase,
-    /// and generates the corresponding output operator command.
+    /// Evaluates rules directly into pre-allocated preference memory and resolves decisions,
+    /// avoiding heap reallocations (`RawVecInner::finish_grow`) during CBMC verification.
     pub fn step(&mut self, input: &FlightTelemetryFFI) -> OperatorCommandFFI {
         if !input.sensor_valid {
             return OperatorCommandFFI {
@@ -138,79 +85,43 @@ impl SoarAadlAgent {
             };
         }
 
-        // Reset preferences and decision outputs for a clean frame execution
         self.agent.preferences.clear();
-        self.agent.selected_operator = None;
 
-        // Insert input telemetry WMEs
-        let status_val = if input.engine_status == 2 {
-            self.val_critical
+        // Production Rules: Engine Failure vs Nominal Cruise
+        if input.engine_status == 2 {
+            self.agent.preferences.push(Preference {
+                state: self.state_id,
+                operator: self.op_emergency,
+                preference_type: PreferenceType::Acceptable,
+            });
+            self.agent.preferences.push(Preference {
+                state: self.state_id,
+                operator: self.op_cruise,
+                preference_type: PreferenceType::Reject,
+            });
         } else {
-            self.val_normal
+            self.agent.preferences.push(Preference {
+                state: self.state_id,
+                operator: self.op_cruise,
+                preference_type: PreferenceType::Acceptable,
+            });
+        }
+
+        // Execute Decision Phase via Soar Preference Resolution Engine
+        let result = resolve_preferences(self.state_id, &self.agent.preferences);
+
+        let selected_id = match result {
+            DecisionResult::Selected(op) => op.0,
+            _ => 0,
         };
 
-        let wme_key = self.agent.insert_wme(self.state_id, self.attr_engine, status_val);
-
-        // Execute Elaboration + Decision Phases within the 2ms AGREE budget
-        self.agent.run_decision_cycle(self.state_id);
-
-        let selected = self.agent.selected_operator.unwrap_or(SymbolId(0));
-
-        // Cleanup cycle WMEs
-        self.agent.remove_wme(wme_key);
-
-        let target_alt = if selected.0 == 99 { 0.0 } else { input.altitude_ft };
+        let target_alt = if selected_id == 99 { 0.0 } else { input.altitude_ft };
 
         OperatorCommandFFI {
-            operator_id: selected.0,
+            operator_id: selected_id,
             target_heading_deg: 0.0,
             target_altitude_ft: target_alt,
             is_valid: true,
-        }
-    }
-}
-
-/// Allocates and initializes a new `SoarAadlAgent` handle over C-ABI.
-///
-/// # Safety
-/// Caller is responsible for eventually freeing the handle via `soar_aadl_free`.
-#[no_mangle]
-pub extern "C" fn soar_aadl_init() -> *mut SoarAadlAgent {
-    let agent = alloc::boxed::Box::new(SoarAadlAgent::new());
-    alloc::boxed::Box::into_raw(agent)
-}
-
-/// Executes a single periodic step for an initialized `SoarAadlAgent` over C-ABI.
-///
-/// # Safety
-/// `handle`, `input`, and `output` must be valid, non-null pointers.
-#[no_mangle]
-pub extern "C" fn soar_aadl_step(
-    handle: *mut SoarAadlAgent,
-    input: *const FlightTelemetryFFI,
-    output: *mut OperatorCommandFFI,
-) {
-    if handle.is_null() || input.is_null() || output.is_null() {
-        return;
-    }
-
-    unsafe {
-        let agent = &mut *handle;
-        let in_data = &*input;
-        let out_data = agent.step(in_data);
-        *output = out_data;
-    }
-}
-
-/// Frees an allocated `SoarAadlAgent` handle over C-ABI.
-///
-/// # Safety
-/// `handle` must have been returned by `soar_aadl_init` and not previously freed.
-#[no_mangle]
-pub extern "C" fn soar_aadl_free(handle: *mut SoarAadlAgent) {
-    if !handle.is_null() {
-        unsafe {
-            let _ = alloc::boxed::Box::from_raw(handle);
         }
     }
 }

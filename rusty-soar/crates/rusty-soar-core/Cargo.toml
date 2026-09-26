@@ -9,6 +9,7 @@ description = "Core cognitive kernel for rusty-soar supporting RETE, TMS, EPMEM,
 
 [dependencies]
 hashbrown = { workspace = true }
+heapless = "0.9.3"
 slotmap = { workspace = true }
 
 [dev-dependencies]
