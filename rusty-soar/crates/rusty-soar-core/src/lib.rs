@@ -28,6 +28,8 @@ pub mod symbol;
 pub mod tms;
 /// Working memory arena and element management.
 pub mod wm;
+/// Formal verification bridge proving hardware equivalence between AADL/AGREE contracts and the Rust implementation.
+pub mod aadl_bridge;
 
 /// Alias `preference` as `decision` for module path compatibility.
 pub use preference as decision;
