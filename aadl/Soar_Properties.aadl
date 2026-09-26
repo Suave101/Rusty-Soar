@@ -1,0 +1,17 @@
+property set Soar_Properties is
+	-- Maximum allowed elaboration cycles per decision phase before forcing a Decision Phase
+	Max_Elaboration_Cycles: aadlinteger => 100
+		applies to (thread, subprogram, process);
+
+	-- Static allocation limit for Working Memory Arena (WmeArena) handles
+	WME_Buffer_Capacity: aadlinteger => 1024
+		applies to (thread, data);
+
+	-- Worst-Case Execution Time (WCET) budget allocated for RETE match + decision resolution
+	Decision_Phase_Budget: Time => 2 ms
+		applies to (thread, subprogram);
+
+	-- Cognitive loop execution frequency
+	Cognitive_Cycle_Period: Time => 10 ms
+		applies to (thread);
+end Soar_Properties;

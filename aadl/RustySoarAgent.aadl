@@ -1,0 +1,64 @@
+package RustySoarAgent
+public
+	with Soar_Types;
+	with Soar_Properties;
+	with Base_Types;
+
+	thread Soar_Decision_Thread
+		features
+			in_telemetry: in data port Soar_Types::Flight_Telemetry.impl;
+			out_operator_cmd: out data port Soar_Types::Operator_Command.impl;
+			out_impasse_event: out event port;
+
+		properties
+			Dispatch_Protocol => Periodic;
+			Period => 10 ms;
+			Compute_Execution_Time => 1 ms .. 2 ms;
+			Soar_Properties::Max_Elaboration_Cycles => 10;
+			Soar_Properties::Decision_Phase_Budget => 2 ms;
+			Soar_Properties::WME_Buffer_Capacity => 1024;
+
+		annex agree {**
+			-- AGREE Constant Identifiers
+			const OPERATOR_CRUISE_ID : uint32 = 10u;
+			const OPERATOR_EMERGENCY_LAND_ID : uint32 = 99u;
+
+			const ENGINE_STATUS_NORMAL : uint8 = 0u;
+			const ENGINE_STATUS_CRITICAL : uint20 = 2u;
+
+			-- ==========================================
+			-- ASSUMPTIONS (Environment & Input Contracts)
+			-- ==========================================
+			assume "Telemetry sensor input must be valid and refreshed within cycle time" :
+				in_telemetry.sensor_valid == true;
+
+			assume "Airspeed parameter bounded within realistic envelope" :
+				in_telemetry.airspeed_kts >= 0.0 and in_telemetry.airspeed_kts <= 300.0;
+
+			assume "Altitude bounded within operational ceiling" :
+				in_telemetry.altitude_ft >= 0.0 and in_telemetry.altitude_ft <= 50000.0;
+
+			-- ==========================================
+			-- GUARANTEES (System & Decision Contracts)
+			-- ==========================================
+			guarantee "Decision phase output command is always marked valid" :
+				out_operator_cmd.is_valid == true;
+
+			guarantee "Critical Engine Failure MUST select Emergency Landing Operator (ID 99)" :
+				(in_telemetry.engine_status == ENGINE_STATUS_CRITICAL) =>
+					(out_operator_cmd.operator_id == OPERATOR_EMERGENCY_LAND_ID);
+
+			guarantee "Nominal Engine Status MUST select Cruise Operator (ID 10)" :
+				(in_telemetry.engine_status == ENGINE_STATUS_NORMAL) =>
+					(out_operator_cmd.operator_id == OPERATOR_CRUISE_ID);
+
+			guarantee "Emergency Land altitude target set to ground level (0.0 ft)" :
+				(out_operator_cmd.operator_id == OPERATOR_EMERGENCY_LAND_ID) =>
+					(out_operator_cmd.target_altitude_ft == 0.0);
+		**};
+	end Soar_Decision_Thread;
+
+	thread implementation Soar_Decision_Thread.impl
+	end Soar_Decision_Thread.impl;
+
+end RustySoarAgent;

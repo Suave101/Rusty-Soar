@@ -1,0 +1,29 @@
+package AutonomousCopilotSystem
+public
+	with RustySoarAgent;
+	with Soar_Types;
+
+	system Copilot_Avionics
+		features
+			flight_sensors: in data port Soar_Types::Flight_Telemetry.impl;
+			actuator_commands: out data port Soar_Types::Operator_Command.impl;
+			impasse_alert: out event port;
+	end Copilot_Avionics;
+
+	system implementation Copilot_Avionics.impl
+		subcomponents
+			soar_thread: thread RustySoarAgent::Soar_Decision_Thread.impl;
+
+		connections
+			sensor_conn: port flight_sensors -> soar_thread.in_telemetry;
+			actuator_conn: port soar_thread.out_operator_cmd -> actuator_commands;
+			impasse_conn: port soar_thread.out_impasse_event -> impasse_alert;
+
+		annex agree {**
+			-- End-to-End System Invariant Verification
+			guarantee "System guarantees emergency operator triggering upon critical failure" :
+				(flight_sensors.engine_status == 2u) => (actuator_commands.operator_id == 99u);
+		**};
+	end Copilot_Avionics.impl;
+
+end AutonomousCopilotSystem;

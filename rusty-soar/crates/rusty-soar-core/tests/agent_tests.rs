@@ -1,7 +1,6 @@
 use rusty_soar_core::agent::{Action, SoarAgent};
 use rusty_soar_core::preference::{Preference, PreferenceType};
 use rusty_soar_core::rete::AlphaTest;
-use rusty_soar_core::wm::SupportType;
 
 #[test]
 fn test_wme_insert_and_retract() {

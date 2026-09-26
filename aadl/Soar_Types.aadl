@@ -1,0 +1,48 @@
+package Soar_Types
+public
+	with Data_Model;
+
+	-- Integer ID representation matching rusty_soar_core::symbol::SymbolId
+	data Symbol_Id
+		properties
+			Data_Model::Data_Representation => Unsigned_Integer;
+			Data_Model::Number_Representation => Unsigned;
+			Data_Model::Base_Type => (classifier (Base_Types::Unsigned_32));
+	end Symbol_Id;
+
+	-- WME Key handle matching rusty_soar_core::wm::WmeKey
+	data Wme_Key
+		properties
+			Data_Model::Data_Representation => Unsigned_Integer;
+			Data_Model::Base_Type => (classifier (Base_Types::Unsigned_32));
+	end Wme_Key;
+
+	-- Raw Flight Telemetry fed into Working Memory
+	data Flight_Telemetry
+		properties
+			Data_Model::Data_Representation => Struct;
+	end Flight_Telemetry;
+
+	data implementation Flight_Telemetry.impl
+		subcomponents
+			airspeed_kts: data Base_Types::Float_32;
+			altitude_ft: data Base_Types::Float_32;
+			engine_status: data Base_Types::Unsigned_8; -- 0: Normal, 1: Degradation, 2: Critical Failure
+			sensor_valid: data Base_Types::Boolean;
+	end Flight_Telemetry.impl;
+
+	-- Operator Command emitted by Decision Phase
+	data Operator_Command
+		properties
+			Data_Model::Data_Representation => Struct;
+	end Operator_Command;
+
+	data implementation Operator_Command.impl
+		subcomponents
+			operator_id: data Symbol_Id; -- 10: Cruise_Op, 99: Emergency_Land_Op
+			target_heading_deg: data Base_Types::Float_32;
+			target_altitude_ft: data Base_Types::Float_32;
+			is_valid: data Base_Types::Boolean;
+	end Operator_Command.impl;
+
+end Soar_Types;
