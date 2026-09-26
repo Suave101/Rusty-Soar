@@ -6,7 +6,7 @@ extern crate alloc;
 
 /// Agent implementation coordinating the Soar decision cycle and memory modules.
 pub mod agent;
-/// Episodic Memory records temporal snapshots of Working Memory at each decision cycle, allowing the cognitive agent to recall prior experiences, reconstruct past states, and query previous temporal episodes using cue matching.
+/// Episodic memory system for temporal snapshot recording and retrieval.
 pub mod epmem;
 /// Architectural impasse types and substate handling.
 pub mod impasse;
@@ -18,10 +18,12 @@ pub mod preference;
 pub mod production;
 /// Index-based RETE pattern matching engine.
 pub mod rete;
-/// Semantic Memory enables the agent to store non-perishable semantic knowledge outside Working Memory and retrieve facts on-demand into Working Memory via query cues.
+/// Semantic memory system for long-term factual knowledge storage and retrieval.
 pub mod smem;
 /// Global symbol interning table and identifier system.
 pub mod symbol;
+/// Truth Maintenance System (TMS) for tracking dependencies and I-support retractions.
+pub mod tms;
 /// Working memory arena and element management.
 pub mod wm;
 
