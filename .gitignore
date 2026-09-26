@@ -1,2 +1,4 @@
 .env
 *.env
+rusty-soar/target/*
+rusty-soar/target
