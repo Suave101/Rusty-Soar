@@ -1,4 +1,5 @@
 use alloc::{vec, vec::Vec};
+use crate::epmem::{EpisodeId, EpisodicMemory};
 use crate::impasse::{ImpasseType, SubstateRecord};
 use crate::learning::ChunkBuilder;
 use crate::preference::{resolve_preferences, DecisionResult, Preference};
@@ -51,6 +52,8 @@ pub struct SoarAgent {
     pub rete: ReteNetwork,
     /// Long-term declarative Semantic Memory store.
     pub smem: SemanticMemory,
+    /// Long-term autobiographical Episodic Memory store.
+    pub epmem: EpisodicMemory,
     /// Active phase of the Soar decision cycle.
     pub current_phase: Phase,
     /// Active operator preference pool maintained across decision cycles.
@@ -61,6 +64,8 @@ pub struct SoarAgent {
     pub substates: Vec<SubstateRecord>,
     /// Monotonically increasing state generation counter.
     pub state_counter: usize,
+    /// Monotonically increasing decision cycle counter.
+    pub cycle_counter: usize,
     /// Explanation-based learning chunk builder.
     pub chunk_builder: ChunkBuilder,
     /// Count of automatically synthesized chunk rules.
@@ -80,11 +85,13 @@ impl SoarAgent {
             wm: WmeArena::new(),
             rete: ReteNetwork::new(),
             smem: SemanticMemory::new(),
+            epmem: EpisodicMemory::new(),
             current_phase: Phase::Input,
             preferences: Vec::new(),
             selected_operator: None,
             substates: Vec::new(),
             state_counter: 1,
+            cycle_counter: 0,
             chunk_builder: ChunkBuilder::new(),
             chunks_learned: 0,
             rule_actions: Vec::new(),
@@ -113,6 +120,11 @@ impl SoarAgent {
     pub fn remove_wme(&mut self, key: WmeKey) {
         self.wm.remove(key);
         self.rete.remove_wme(key);
+    }
+
+    /// Records the current Working Memory snapshot as an episode in Episodic Memory.
+    pub fn record_episode(&mut self) -> EpisodeId {
+        self.epmem.record_episode(self.cycle_counter, &self.wm)
     }
 
     /// Queries Semantic Memory for an LTI matching an attribute-value cue and copies facts into Working Memory under `target_id`.
@@ -266,8 +278,10 @@ impl SoarAgent {
         self.run_elaboration_phase()
     }
 
-    /// Executes one complete 5-phase Soar Decision Cycle.
+    /// Executes one complete 5-phase Soar Decision Cycle and records an autobiographical episode.
     pub fn run_decision_cycle(&mut self, state_id: SymbolId) -> DecisionResult {
+        self.cycle_counter += 1;
+
         // 1. Input Phase
         self.current_phase = Phase::Input;
 
@@ -284,6 +298,9 @@ impl SoarAgent {
 
         // 5. Output Phase
         self.current_phase = Phase::Output;
+
+        // Record autobiographical EpMem snapshot
+        self.record_episode();
 
         decision
     }

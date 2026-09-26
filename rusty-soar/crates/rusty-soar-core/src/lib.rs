@@ -6,6 +6,8 @@ extern crate alloc;
 
 /// Agent implementation coordinating the Soar decision cycle and memory modules.
 pub mod agent;
+/// Episodic Memory records temporal snapshots of Working Memory at each decision cycle, allowing the cognitive agent to recall prior experiences, reconstruct past states, and query previous temporal episodes using cue matching.
+pub mod epmem;
 /// Architectural impasse types and substate handling.
 pub mod impasse;
 /// Explanation-Based Learning (Chunking) for rule synthesis.
