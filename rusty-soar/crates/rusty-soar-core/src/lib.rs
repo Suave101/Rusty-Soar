@@ -8,6 +8,8 @@ extern crate alloc;
 pub mod agent;
 /// Architectural impasse types and substate handling.
 pub mod impasse;
+/// Explanation-Based Learning (Chunking) for rule synthesis.
+pub mod learning;
 /// Preference resolution semantics for candidate operator selection.
 pub mod preference;
 /// Production rule structures and action definitions.

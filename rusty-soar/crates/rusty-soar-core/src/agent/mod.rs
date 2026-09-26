@@ -1,5 +1,6 @@
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 use crate::impasse::{ImpasseType, SubstateRecord};
+use crate::learning::ChunkBuilder;
 use crate::preference::{resolve_preferences, DecisionResult, Preference};
 use crate::rete::{AlphaTest, ReteNetwork, VariableBinding};
 use crate::symbol::{SymbolId, SymbolTable};
@@ -39,7 +40,7 @@ pub enum Action {
     Prefer(Preference),
 }
 
-/// The main Soar Cognitive Agent instance coordinating memory, RETE, and decision processing.
+/// The main Soar Cognitive Agent instance coordinating memory, RETE, decision processing, and learning.
 pub struct SoarAgent {
     /// Global symbol interning table.
     pub symbols: SymbolTable,
@@ -49,7 +50,7 @@ pub struct SoarAgent {
     pub rete: ReteNetwork,
     /// Active phase of the Soar decision cycle.
     pub current_phase: Phase,
-    /// Active operator preference pool for the current cycle.
+    /// Active operator preference pool maintained across decision cycles.
     pub preferences: Vec<Preference>,
     /// Currently selected active operator handle (if any).
     pub selected_operator: Option<SymbolId>,
@@ -57,6 +58,10 @@ pub struct SoarAgent {
     pub substates: Vec<SubstateRecord>,
     /// Monotonically increasing state generation counter.
     pub state_counter: usize,
+    /// Explanation-based learning chunk builder.
+    pub chunk_builder: ChunkBuilder,
+    /// Count of automatically synthesized chunk rules.
+    pub chunks_learned: usize,
     /// Action callbacks mapped to production rules by name.
     pub rule_actions: Vec<(&'static str, Vec<Action>)>,
 }
@@ -76,6 +81,8 @@ impl SoarAgent {
             selected_operator: None,
             substates: Vec::new(),
             state_counter: 1,
+            chunk_builder: ChunkBuilder::new(),
+            chunks_learned: 0,
             rule_actions: Vec::new(),
         }
     }
@@ -105,6 +112,7 @@ impl SoarAgent {
     }
 
     /// Runs the Proposal Phase: Elaboration rules fire until RETE reaches quiescence.
+    /// If substate rules produce superstate preferences, a chunk is learned.
     pub fn run_elaboration_phase(&mut self) -> usize {
         self.current_phase = Phase::Proposal;
         let mut total_fires = 0;
@@ -123,15 +131,27 @@ impl SoarAgent {
                 {
                     let actions_to_run = actions.clone();
                     for action in actions_to_run {
-                        match action {
+                        match &action {
                             Action::Add { id, attr, val } => {
-                                self.insert_wme(id, attr, val);
+                                self.insert_wme(*id, *attr, *val);
                             }
                             Action::Remove(key) => {
-                                self.remove_wme(key);
+                                self.remove_wme(*key);
                             }
                             Action::Prefer(pref) => {
-                                self.preferences.push(pref);
+                                if !self.preferences.contains(pref) {
+                                    self.preferences.push(pref.clone());
+                                }
+
+                                // Detect substate-to-superstate result resolution for Chunking
+                                if let Some(substate) = self.substates.last() {
+                                    if pref.state == substate.superstate_id {
+                                        self.learn_chunk_for_result(
+                                            substate.superstate_id,
+                                            Action::Prefer(pref.clone()),
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
@@ -140,6 +160,25 @@ impl SoarAgent {
         }
 
         total_fires
+    }
+
+    /// Resolves superstate conditions and automatically registers a learned Chunk rule into RETE.
+    fn learn_chunk_for_result(&mut self, superstate_id: SymbolId, result_action: Action) {
+        // Build grounding conditions based on the superstate
+        let superstate_conditions = vec![(
+            AlphaTest {
+                id: Some(superstate_id),
+                attr: None,
+                val: None,
+            },
+            vec![],
+        )];
+
+        let chunk = self.chunk_builder.build_chunk(superstate_conditions, result_action);
+        self.chunks_learned += 1;
+
+        // Compile synthesized Chunk directly into RETE network
+        self.add_rule(chunk.name, chunk.conditions, chunk.actions);
     }
 
     /// Runs the Decision Phase: Evaluates preferences to select an operator or create an impasse substate.
@@ -196,9 +235,6 @@ impl SoarAgent {
 
         // 5. Output Phase
         self.current_phase = Phase::Output;
-
-        // Reset per-cycle preference buffer
-        self.preferences.clear();
 
         decision
     }
