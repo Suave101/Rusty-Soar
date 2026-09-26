@@ -3,7 +3,12 @@ name = "rusty-soar-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Core cognitive kernel for rusty-soar supporting RETE, TMS, EPMEM, SMEM, and RL."
 
 [dependencies]
-slotmap.workspace = true
-hashbrown.workspace = true
+hashbrown = { workspace = true }
+slotmap = { workspace = true }
+
+[dev-dependencies]

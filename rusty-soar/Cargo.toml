@@ -1,7 +1,7 @@
 [package]
 name = "rusty-soar"
-version = "0.0.1"
-edition = "2024"
+version = "1.0.0"
+edition = "2021"
 authors = ["Alexander Doyle <adoyle2025@my.fit.edu>"]
 description = "A certifiable, zero-GC, `#![no_std]` Rust implementation of the Soar cognitive engine."
 license = "MIT OR Apache-2.0"
@@ -18,9 +18,11 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/suave101/rusty-soar"
+authors = ["Alexander Doyle <adoyle2025@my.fit.edu>"]
 
 [workspace.dependencies]
 slotmap = { version = "1.0", default-features = false }
