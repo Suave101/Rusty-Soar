@@ -6,6 +6,8 @@ extern crate alloc;
 
 /// Agent implementation coordinating the Soar decision cycle and memory modules.
 pub mod agent;
+/// Architectural impasse types and substate handling.
+pub mod impasse;
 /// Preference resolution semantics for candidate operator selection.
 pub mod preference;
 /// Production rule structures and action definitions.

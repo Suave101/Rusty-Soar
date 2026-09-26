@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use crate::impasse::{ImpasseType, SubstateRecord};
 use crate::preference::{resolve_preferences, DecisionResult, Preference};
 use crate::rete::{AlphaTest, ReteNetwork, VariableBinding};
 use crate::symbol::{SymbolId, SymbolTable};
@@ -52,6 +53,10 @@ pub struct SoarAgent {
     pub preferences: Vec<Preference>,
     /// Currently selected active operator handle (if any).
     pub selected_operator: Option<SymbolId>,
+    /// Active architectural substates generated from impasses.
+    pub substates: Vec<SubstateRecord>,
+    /// Monotonically increasing state generation counter.
+    pub state_counter: usize,
     /// Action callbacks mapped to production rules by name.
     pub rule_actions: Vec<(&'static str, Vec<Action>)>,
 }
@@ -69,6 +74,8 @@ impl SoarAgent {
             current_phase: Phase::Input,
             preferences: Vec::new(),
             selected_operator: None,
+            substates: Vec::new(),
+            state_counter: 1,
             rule_actions: Vec::new(),
         }
     }
@@ -135,18 +142,105 @@ impl SoarAgent {
         total_fires
     }
 
-    /// Runs the Decision Phase: Evaluates preferences to select an operator or handle an impasse.
+    /// Runs the Decision Phase: Evaluates preferences to select an operator or create an impasse substate.
     pub fn run_decision_phase(&mut self, state_id: SymbolId) -> DecisionResult {
         self.current_phase = Phase::Decision;
         let result = resolve_preferences(state_id, &self.preferences);
 
-        if let DecisionResult::Selected(op_id) = result {
-            self.selected_operator = Some(op_id);
-        } else {
-            self.selected_operator = None;
+        match &result {
+            DecisionResult::Selected(op_id) => {
+                self.selected_operator = Some(*op_id);
+            }
+            DecisionResult::TieImpasse(candidates) => {
+                self.selected_operator = None;
+                self.create_impasse_substate(state_id, ImpasseType::Tie, candidates);
+            }
+            DecisionResult::ConflictImpasse(candidates) => {
+                self.selected_operator = None;
+                self.create_impasse_substate(state_id, ImpasseType::Conflict, candidates);
+            }
+            DecisionResult::NoChangeImpasse => {
+                self.selected_operator = None;
+                self.create_impasse_substate(state_id, ImpasseType::NoChange, &[]);
+            }
         }
 
         result
+    }
+
+    /// Runs Application Phase rules matching the currently selected operator until quiescence.
+    pub fn run_application_phase(&mut self) -> usize {
+        self.current_phase = Phase::Application;
+        if self.selected_operator.is_none() {
+            return 0;
+        }
+
+        self.run_elaboration_phase()
+    }
+
+    /// Executes one complete 5-phase Soar Decision Cycle.
+    pub fn run_decision_cycle(&mut self, state_id: SymbolId) -> DecisionResult {
+        // 1. Input Phase
+        self.current_phase = Phase::Input;
+
+        // 2. Proposal Phase
+        self.run_elaboration_phase();
+
+        // 3. Decision Phase
+        let decision = self.run_decision_phase(state_id);
+
+        // 4. Application Phase
+        if self.selected_operator.is_some() {
+            self.run_application_phase();
+        }
+
+        // 5. Output Phase
+        self.current_phase = Phase::Output;
+
+        // Reset per-cycle preference buffer
+        self.preferences.clear();
+
+        decision
+    }
+
+    /// Generates a substate WME hierarchy in Working Memory to represent an architectural impasse.
+    fn create_impasse_substate(
+        &mut self,
+        superstate_id: SymbolId,
+        impasse_type: ImpasseType,
+        candidates: &[SymbolId],
+    ) -> SymbolId {
+        self.state_counter += 1;
+        let substate_id = self.symbols.intern_id('S', self.state_counter as u64);
+
+        let attr_superstate = self.symbols.intern_str("superstate");
+        let attr_type = self.symbols.intern_str("type");
+        let attr_impasse = self.symbols.intern_str("impasse");
+        let attr_item = self.symbols.intern_str("item");
+
+        let val_impasse = self.symbols.intern_str("impasse");
+        let val_type_str = match impasse_type {
+            ImpasseType::Tie => self.symbols.intern_str("tie"),
+            ImpasseType::Conflict => self.symbols.intern_str("conflict"),
+            ImpasseType::NoChange => self.symbols.intern_str("no-change"),
+        };
+
+        // Populate Working Memory with substate architecture WMEs
+        self.insert_wme(substate_id, attr_superstate, superstate_id);
+        self.insert_wme(substate_id, attr_type, val_impasse);
+        self.insert_wme(substate_id, attr_impasse, val_type_str);
+
+        for &cand in candidates {
+            self.insert_wme(substate_id, attr_item, cand);
+        }
+
+        self.substates.push(SubstateRecord {
+            substate_id,
+            superstate_id,
+            impasse_type,
+        });
+
+        substate_id
     }
 }
 
