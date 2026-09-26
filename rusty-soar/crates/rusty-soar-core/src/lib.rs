@@ -1,23 +1,20 @@
+//! RustySoar Core Engine
 #![no_std]
 #![deny(missing_docs)]
-#![deny(unsafe_code)]
-
-//! # RustySoar Core
-//! A `#![no_std]`, zero-GC, certifiable Rust implementation of the Soar cognitive engine.
 
 extern crate alloc;
 
-/// Top-level Soar agent orchestration and decision cycle driver.
+/// Agent implementation coordinating the Soar decision cycle and memory modules.
 pub mod agent;
-/// Decision cycle and operator preference resolution.
-pub mod decision;
-/// Rete pattern matching execution network.
+/// Preference resolution semantics for candidate operator selection.
+pub mod preference;
+/// Production rule structures and action definitions.
+pub mod production;
+/// Index-based RETE pattern matching engine.
 pub mod rete;
-/// Symbol interning and O(1) identifier mapping.
+/// Global symbol interning table and identifier system.
 pub mod symbol;
-/// Working Memory Elements (WMEs) and generational arena allocation.
+/// Working memory arena and element management.
 pub mod wm;
 
 pub use agent::{Agent, Phase};
-pub use symbol::SymbolId;
-pub use wm::{Wme, WmeArena, WmeKey};
