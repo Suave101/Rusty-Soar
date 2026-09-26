@@ -1,0 +1,11 @@
+[package]
+name = "rusty-soar"
+version = "0.0.1"
+edition = "2024"
+authors = ["Alexander Doyle <adoyle2025@my.fit.edu>"]
+description = "A certifiable, zero-GC, `#![no_std]` Rust implementation of the Soar cognitive engine."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/suave101/rusty-soar"
+readme = "README.md"
+keywords = ["cognitive-architecture", "soar", "no_std", "ai-safety"]
+categories = ["embedded", "science"]
