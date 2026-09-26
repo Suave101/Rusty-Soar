@@ -29,4 +29,6 @@ pub mod tms;
 /// Working memory arena and element management.
 pub mod wm;
 
-pub use agent::{Agent, Phase};
+/// Alias `preference` as `decision` for module path compatibility.
+pub use preference as decision;
+pub use agent::{Agent, SoarAgent};

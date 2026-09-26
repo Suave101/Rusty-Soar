@@ -2,7 +2,7 @@ use alloc::{vec, vec::Vec};
 use crate::epmem::{EpisodeId, EpisodicMemory};
 use crate::impasse::{ImpasseType, SubstateRecord};
 use crate::learning::ChunkBuilder;
-use crate::preference::{resolve_preferences, DecisionResult, Preference};
+use crate::preference::{resolve_preferences_with_rl, DecisionResult, Preference};
 use crate::rete::{AlphaTest, ReteNetwork, VariableBinding};
 use crate::rl::ReinforcementLearning;
 use crate::smem::{LtiId, SemanticMemory};
@@ -241,10 +241,10 @@ impl SoarAgent {
         self.add_rule(chunk.name, chunk.conditions, chunk.actions);
     }
 
-    /// Runs the Decision Phase: Evaluates preferences to select an operator or create an impasse substate.
+    /// Runs the Decision Phase: Evaluates preferences with RL support to select an operator or create an impasse.
     pub fn run_decision_phase(&mut self, state_id: SymbolId) -> DecisionResult {
         self.current_phase = Phase::Decision;
-        let result = resolve_preferences(state_id, &self.preferences);
+        let result = resolve_preferences_with_rl(state_id, &self.preferences, &self.rl);
 
         match &result {
             DecisionResult::Selected(op_id) => {

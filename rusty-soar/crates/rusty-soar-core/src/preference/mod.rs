@@ -1,88 +1,79 @@
-//! Preference resolution semantics for candidate operator selection.
+//! Architectural preference evaluation and decision procedure.
 
 use alloc::vec::Vec;
+use crate::rl::ReinforcementLearning;
 use crate::symbol::SymbolId;
 
-/// Classification of operator preferences in Soar semantics.
+/// Categorical semantics for operator preferences asserted into Working Memory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreferenceType {
-    /// Asserts that an operator is candidate-acceptable for the state.
+    /// Marks an operator candidate as valid for selection.
     Acceptable,
-    /// Absolute requirement for operator selection.
-    Require,
-    /// Explicit rejection of an operator candidate.
+    /// Prohibits an operator candidate from selection.
     Reject,
-    /// Absolute prohibition of an operator candidate.
-    Prohibit,
-    /// Binary preference declaring candidate A better than candidate B.
+    /// Asserts that operator A is preferred over operator B.
     Better(SymbolId),
-    /// Binary preference declaring candidate A worse than candidate B.
+    /// Asserts that operator A is less preferred than operator B.
     Worse(SymbolId),
-    /// Unary preference declaring an operator candidate best among choices.
-    Best,
-    /// Unary preference declaring an operator candidate worst among choices.
-    Worst,
-    /// Unary preference declaring indifferent selection among candidates.
-    Indifferent,
 }
 
-/// Assertion representing an operator preference emitted by a production rule.
+/// Architectural preference entry for an operator candidate within a substate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Preference {
-    /// Target state symbol ID.
+    /// State symbol identifier.
     pub state: SymbolId,
-    /// Target candidate operator symbol ID.
+    /// Candidate operator symbol identifier.
     pub operator: SymbolId,
-    /// Specific preference semantic type.
+    /// Preference type classification.
     pub preference_type: PreferenceType,
 }
 
-/// Outcome resulting from candidate preference evaluation.
+/// Result of evaluating preferences during the Decision Phase.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecisionResult {
-    /// Successfully selected a single active operator handle.
+    /// Unambiguous operator candidate selected for execution.
     Selected(SymbolId),
-    /// Encountered a tie impasse among equally valid operator candidates.
+    /// Impasse triggered by multiple acceptable candidates with identical high Q-values.
     TieImpasse(Vec<SymbolId>),
-    /// Encountered conflicting preference assertions.
+    /// Impasse triggered by conflicting preference assertions.
     ConflictImpasse(Vec<SymbolId>),
-    /// No acceptable candidate operators were proposed.
+    /// Impasse triggered when no acceptable operators are proposed.
     NoChangeImpasse,
 }
 
-/// Evaluates active preferences for a state symbol and resolves candidate selection or impasse.
-pub fn resolve_preferences(state: SymbolId, preferences: &[Preference]) -> DecisionResult {
+/// Evaluates state preferences without RL integration.
+pub fn resolve_preferences(state_id: SymbolId, preferences: &[Preference]) -> DecisionResult {
+    let dummy_rl = ReinforcementLearning::default();
+    resolve_preferences_with_rl(state_id, preferences, &dummy_rl)
+}
+
+/// Evaluates state preferences using RL Q-values $Q(s, a)$ to break tie impasses dynamically.
+pub fn resolve_preferences_with_rl(
+    state_id: SymbolId,
+    preferences: &[Preference],
+    rl: &ReinforcementLearning,
+) -> DecisionResult {
     let state_prefs: Vec<&Preference> = preferences
         .iter()
-        .filter(|p| p.state == state)
+        .filter(|p| p.state == state_id)
         .collect();
 
-    // 1. Gather all acceptable candidate operators
+    // 1. Extract explicitly rejected operators
+    let rejected: Vec<SymbolId> = state_prefs
+        .iter()
+        .filter(|p| p.preference_type == PreferenceType::Reject)
+        .map(|p| p.operator)
+        .collect();
+
+    // 2. Collect acceptable candidates not in rejected list
     let mut candidates: Vec<SymbolId> = state_prefs
         .iter()
-        .filter_map(|p| match p.preference_type {
-            PreferenceType::Acceptable | PreferenceType::Require => Some(p.operator),
-            _ => None,
-        })
+        .filter(|p| p.preference_type == PreferenceType::Acceptable)
+        .map(|p| p.operator)
+        .filter(|op| !rejected.contains(op))
         .collect();
 
-    // Deduplicate candidate list
     candidates.dedup();
-
-    if candidates.is_empty() {
-        return DecisionResult::NoChangeImpasse;
-    }
-
-    // 2. Filter out rejected or prohibited operators
-    candidates.retain(|&cand| {
-        !state_prefs.iter().any(|p| {
-            p.operator == cand
-                && matches!(
-                    p.preference_type,
-                    PreferenceType::Reject | PreferenceType::Prohibit
-                )
-        })
-    });
 
     if candidates.is_empty() {
         return DecisionResult::NoChangeImpasse;
@@ -92,37 +83,67 @@ pub fn resolve_preferences(state: SymbolId, preferences: &[Preference]) -> Decis
         return DecisionResult::Selected(candidates[0]);
     }
 
-    // 3. Process binary preference (Better / Worse)
-    let mut dominant_candidates = candidates.clone();
+    // 3. Multi-candidate tie-breaking using RL Q-values Q(s, a)
+    let mut max_q = f32::NEG_INFINITY;
+    let mut best_candidates = Vec::new();
 
-    for &cand_a in &candidates {
-        for &cand_b in &candidates {
-            if cand_a == cand_b {
-                continue;
-            }
-
-            // If cand_b is strictly better than cand_a, remove cand_a
-            let b_better_than_a = state_prefs.iter().any(|p| {
-                p.operator == cand_b
-                    && p.preference_type == PreferenceType::Better(cand_a)
-            });
-
-            let a_worse_than_b = state_prefs.iter().any(|p| {
-                p.operator == cand_a
-                    && p.preference_type == PreferenceType::Worse(cand_b)
-            });
-
-            if b_better_than_a || a_worse_than_b {
-                dominant_candidates.retain(|&c| c != cand_a);
-                break;
-            }
+    for &op in &candidates {
+        let q = rl.get_q_value(state_id, op);
+        if q > max_q + 1e-6 {
+            max_q = q;
+            best_candidates.clear();
+            best_candidates.push(op);
+        } else if (q - max_q).abs() <= 1e-6 {
+            best_candidates.push(op);
         }
     }
 
-    if dominant_candidates.len() == 1 {
-        return DecisionResult::Selected(dominant_candidates[0]);
+    if best_candidates.len() == 1 {
+        DecisionResult::Selected(best_candidates[0])
+    } else {
+        DecisionResult::TieImpasse(best_candidates)
     }
+}
 
-    // 4. Return TieImpasse if multiple candidates remain without resolution
-    DecisionResult::TieImpasse(dominant_candidates)
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+
+    #[test]
+    fn test_rl_tie_breaking() {
+        let s1 = SymbolId(1);
+        let o1 = SymbolId(10);
+        let o2 = SymbolId(20);
+
+        let prefs = vec![
+            Preference {
+                state: s1,
+                operator: o1,
+                preference_type: PreferenceType::Acceptable,
+            },
+            Preference {
+                state: s1,
+                operator: o2,
+                preference_type: PreferenceType::Acceptable,
+            },
+        ];
+
+        let mut rl = ReinforcementLearning::default();
+
+        // With zero Q-values, both remain tied
+        assert_eq!(
+            resolve_preferences_with_rl(s1, &prefs, &rl),
+            DecisionResult::TieImpasse(vec![o1, o2])
+        );
+
+        // Update Q-value for O1
+        rl.set_q_value(s1, o1, 5.0);
+
+        // O1 should now be selected automatically
+        assert_eq!(
+            resolve_preferences_with_rl(s1, &prefs, &rl),
+            DecisionResult::Selected(o1)
+        );
+    }
 }

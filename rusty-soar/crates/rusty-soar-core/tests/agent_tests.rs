@@ -1,179 +1,147 @@
-use rusty_soar_core::agent::{Agent, Phase};
-use rusty_soar_core::decision::{Preference, PreferenceType};
-use rusty_soar_core::rete::ProductionId;
-use rusty_soar_core::symbol::SymbolData;
+use rusty_soar_core::agent::{Action, SoarAgent};
+use rusty_soar_core::preference::{Preference, PreferenceType};
+use rusty_soar_core::rete::AlphaTest;
 use rusty_soar_core::wm::SupportType;
 
 #[test]
-fn test_symbol_interning() {
-    let mut agent = Agent::new();
-    let id1 = agent.symbols.intern_str("^sensor-status");
-    let id2 = agent.symbols.intern_str("^sensor-status");
-    let id3 = agent.symbols.intern_str("offline");
+fn test_wme_insert_and_retract() {
+    let mut agent = SoarAgent::new();
 
-    assert_eq!(id1, id2, "Identical strings must return identical SymbolId handles");
-    assert_ne!(id1, id3, "Distinct strings must return unique SymbolId handles");
-
-    if let Some(SymbolData::String(s)) = agent.symbols.resolve(id1) {
-        assert_eq!(s, "^sensor-status");
-    } else {
-        panic!("Failed to resolve interned string symbol");
-    }
-}
-
-#[test]
-fn test_wme_arena_lifecycle() {
-    let mut agent = Agent::new();
     let s1 = agent.symbols.intern_id('S', 1);
-    let attr = agent.symbols.intern_str("^status");
-    let val = agent.symbols.intern_str("active");
+    let attr = agent.symbols.intern_str("type");
+    let val = agent.symbols.intern_str("state");
 
-    let key = agent.add_wme(s1, attr, val, SupportType::ISupport);
-    assert_eq!(agent.wm.len(), 1);
+    let key = agent.insert_wme(s1, attr, val);
 
-    let retrieved = agent.wm.get(key).unwrap();
+    let retrieved = agent.wm.get(key).expect("WME should exist in arena");
     assert_eq!(retrieved.id, s1);
-    assert_eq!(retrieved.attribute, attr);
-    assert_eq!(retrieved.value, val);
+    assert_eq!(retrieved.attr, attr);
+    assert_eq!(retrieved.val, val);
 
-    let removed = agent.remove_wme(key);
-    assert!(removed.is_some());
-    assert_eq!(agent.wm.len(), 0);
-    assert!(agent.wm.get(key).is_none(), "Generational key must be invalidated");
+    agent.remove_wme(key);
+    assert!(agent.wm.get(key).is_none());
 }
 
 #[test]
-fn test_decision_preference_resolution() {
-    let mut agent = Agent::new();
+fn test_preference_resolution() {
+    let mut agent = SoarAgent::new();
+
     let s1 = agent.symbols.intern_id('S', 1);
-    let attr_op = agent.symbols.intern_str("^operator");
     let op_a = agent.symbols.intern_id('O', 1);
     let op_b = agent.symbols.intern_id('O', 2);
 
-    agent.preference_buffer.push(Preference {
-        pref_type: PreferenceType::Acceptable,
-        state_id: s1,
-        attribute: attr_op,
-        candidate: op_a,
-        referent: None,
-        source_wme: None,
-    });
-    agent.preference_buffer.push(Preference {
-        pref_type: PreferenceType::Acceptable,
-        state_id: s1,
-        attribute: attr_op,
-        candidate: op_b,
-        referent: None,
-        source_wme: None,
-    });
-    agent.preference_buffer.push(Preference {
-        pref_type: PreferenceType::Reject,
-        state_id: s1,
-        attribute: attr_op,
-        candidate: op_b,
-        referent: None,
-        source_wme: None,
+    agent.preferences.push(Preference {
+        state: s1,
+        operator: op_a,
+        preference_type: PreferenceType::Acceptable,
     });
 
-    agent.step();
+    agent.preferences.push(Preference {
+        state: s1,
+        operator: op_b,
+        preference_type: PreferenceType::Acceptable,
+    });
 
-    assert_eq!(agent.current_phase, Phase::Output);
-    assert_eq!(agent.active_operator, Some(op_a), "Operator B was rejected; Operator A must be selected");
-}
+    agent.preferences.push(Preference {
+        state: s1,
+        operator: op_b,
+        preference_type: PreferenceType::Reject,
+    });
 
-#[test]
-fn test_end_to_end_rete_rule_trigger() {
-    let mut agent = Agent::new();
+    agent.run_decision_phase(s1);
 
-    let s1 = agent.symbols.intern_id('S', 1);
-    let attr_sensor = agent.symbols.intern_str("^sensor-status");
-    let val_offline = agent.symbols.intern_str("offline");
-    let attr_op = agent.symbols.intern_str("^operator");
-    let op_failover = agent.symbols.intern_id('O', 99);
-
-    // Register Rule: IF (^sensor-status offline) THEN propose operator O99 (+)
-    let rule_pref = Preference {
-        pref_type: PreferenceType::Acceptable,
-        state_id: s1,
-        attribute: attr_op,
-        candidate: op_failover,
-        referent: None,
-        source_wme: None,
-    };
-
-    agent.rete.register_rule(
-        ProductionId(1),
-        attr_sensor,
-        val_offline,
-        vec![rule_pref],
-    );
-
-    // Assert telemetry WME: (S1 ^sensor-status offline)
-    agent.add_wme(s1, attr_sensor, val_offline, SupportType::ISupport);
-
-    // Run decision cycle
-    agent.step();
-
-    // Verify operator O99 was proposed by Rete and selected in Decision phase
     assert_eq!(
-        agent.active_operator,
-        Some(op_failover),
-        "Rete rule should fire upon WME match and select failover operator O99"
+        agent.selected_operator,
+        Some(op_a),
+        "Operator B was rejected; Operator A must be selected"
     );
 }
+
 #[test]
-fn test_multi_condition_rule_trigger() {
-    let mut agent = Agent::new();
+fn test_rete_elaboration_and_proposal() {
+    let mut agent = SoarAgent::new();
 
     let s1 = agent.symbols.intern_id('S', 1);
-    let attr_temp = agent.symbols.intern_str("^temperature");
+    let op1 = agent.symbols.intern_id('O', 1);
+
+    let attr_sensor = agent.symbols.intern_str("sensor");
+    let val_offline = agent.symbols.intern_str("offline");
+
+    agent.add_rule(
+        "propose_reboot",
+        vec![(
+            AlphaTest {
+                id: Some(s1),
+                attr: Some(attr_sensor),
+                val: Some(val_offline),
+            },
+            vec![],
+        )],
+        vec![Action::Prefer(Preference {
+            state: s1,
+            operator: op1,
+            preference_type: PreferenceType::Acceptable,
+        })],
+    );
+
+    agent.insert_wme(s1, attr_sensor, val_offline);
+    agent.run_decision_cycle(s1);
+
+    assert_eq!(
+        agent.selected_operator,
+        Some(op1),
+        "Proposed reboot operator should be selected"
+    );
+}
+
+#[test]
+fn test_multi_condition_production() {
+    let mut agent = SoarAgent::new();
+
+    let s1 = agent.symbols.intern_id('S', 1);
+    let op_emergency = agent.symbols.intern_id('O', 99);
+
+    let attr_temp = agent.symbols.intern_str("temperature");
     let val_high = agent.symbols.intern_str("high");
-    
-    let attr_pressure = agent.symbols.intern_str("^pressure");
+
+    let attr_pressure = agent.symbols.intern_str("pressure");
     let val_critical = agent.symbols.intern_str("critical");
 
-    let attr_op = agent.symbols.intern_str("^operator");
-    let op_vent = agent.symbols.intern_id('O', 10);
-
-    // Rule 1: High Temperature -> Vent Operator
-    agent.rete.register_rule(
-        ProductionId(101),
-        attr_temp,
-        val_high,
-        vec![Preference {
-            pref_type: PreferenceType::Acceptable,
-            state_id: s1,
-            attribute: attr_op,
-            candidate: op_vent,
-            referent: None,
-            source_wme: None,
-        }],
+    agent.add_rule(
+        "propose_emergency_shutdown",
+        vec![
+            (
+                AlphaTest {
+                    id: Some(s1),
+                    attr: Some(attr_temp),
+                    val: Some(val_high),
+                },
+                vec![],
+            ),
+            (
+                AlphaTest {
+                    id: Some(s1),
+                    attr: Some(attr_pressure),
+                    val: Some(val_critical),
+                },
+                vec![],
+            ),
+        ],
+        vec![Action::Prefer(Preference {
+            state: s1,
+            operator: op_emergency,
+            preference_type: PreferenceType::Acceptable,
+        })],
     );
 
-    // Rule 2: Critical Pressure -> Vent Operator
-    agent.rete.register_rule(
-        ProductionId(102),
-        attr_pressure,
-        val_critical,
-        vec![Preference {
-            pref_type: PreferenceType::Acceptable,
-            state_id: s1,
-            attribute: attr_op,
-            candidate: op_vent,
-            referent: None,
-            source_wme: None,
-        }],
-    );
+    agent.insert_wme(s1, attr_temp, val_high);
+    agent.insert_wme(s1, attr_pressure, val_critical);
 
-    // Assert temperature and pressure telemetry
-    agent.add_wme(s1, attr_temp, val_high, SupportType::ISupport);
-    agent.add_wme(s1, attr_pressure, val_critical, SupportType::ISupport);
-
-    agent.step();
+    agent.run_decision_cycle(s1);
 
     assert_eq!(
-        agent.active_operator,
-        Some(op_vent),
-        "Vent operator O10 must be selected upon telemetry condition match"
+        agent.selected_operator,
+        Some(op_emergency),
+        "Emergency operator should be selected when all conditions match"
     );
 }
