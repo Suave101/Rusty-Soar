@@ -2,15 +2,19 @@ use alloc::vec::Vec;
 use crate::symbol::SymbolId;
 use crate::wm::WmeKey;
 
-/// Symbol field selector inside a WME triple (Id ^Attr Val)
+/// Symbol field selector inside a Working Memory Element (WME) triple (Id ^Attr Val).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
+    /// Identifier field of the WME triple.
     Id,
+    /// Attribute field of the WME triple.
     Attr,
+    /// Value field of the WME triple.
     Val,
 }
 
 impl Field {
+    /// Extracts the selected symbol handle from a WME triple.
     pub fn extract(&self, triple: &(SymbolId, SymbolId, SymbolId)) -> SymbolId {
         match self {
             Field::Id => triple.0,
@@ -20,24 +24,30 @@ impl Field {
     }
 }
 
-/// Variable join test across condition boundaries in the Beta Network.
-/// Checks if `WME[token_wme_index].field == Incoming_WME.field`
+/// Variable join constraint across condition boundaries in the Beta Network.
 #[derive(Debug, Clone)]
 pub struct VariableBinding {
-    pub token_wme_index: usize, // Which WME in the token chain to check
-    pub token_field: Field,     // Field in the historic token WME
-    pub wme_field: Field,       // Field in the incoming Alpha WME
+    /// Index of the WME in the historic token chain to compare against.
+    pub token_wme_index: usize,
+    /// Field in the historic token WME to test.
+    pub token_field: Field,
+    /// Field in the incoming Alpha WME to test.
+    pub wme_field: Field,
 }
 
-/// Alpha Network constant test filter.
+/// Constant field filter test executed inside Alpha Memory nodes.
 #[derive(Debug, Clone, Default)]
 pub struct AlphaTest {
+    /// Optional identifier requirement.
     pub id: Option<SymbolId>,
+    /// Optional attribute requirement.
     pub attr: Option<SymbolId>,
+    /// Optional value requirement.
     pub val: Option<SymbolId>,
 }
 
 impl AlphaTest {
+    /// Tests whether a WME triple matches the alpha filter criteria.
     pub fn matches(&self, s: SymbolId, a: SymbolId, v: SymbolId) -> bool {
         if let Some(id) = self.id { if id != s { return false; } }
         if let Some(attr) = self.attr { if attr != a { return false; } }
@@ -46,71 +56,111 @@ impl AlphaTest {
     }
 }
 
+/// Recorded Working Memory entry with key tracking for clean retraction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WmeRecord {
+    /// Arena key handle for generational integrity.
     pub key: WmeKey,
+    /// Raw symbol identifier tuple (Id, Attr, Val).
     pub triple: (SymbolId, SymbolId, SymbolId),
 }
 
-/// Token representing partial match history through Beta Memories.
+/// Partial match token tracking historic WME bindings through Beta Memory nodes.
 #[derive(Debug, Clone)]
 pub struct Token {
+    /// Sequence of matched WME records forming the partial rule match path.
     pub wmes: Vec<WmeRecord>,
 }
 
-// Index-based handles to eliminate pointer allocation and enable no_std
+/// Index handle referencing an Alpha Memory node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct AlphaMemoryId(pub usize);
+pub struct AlphaMemoryId(
+    /// Raw arena index.
+    pub usize,
+);
 
+/// Index handle referencing a Beta Memory node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct BetaMemoryId(pub usize);
+pub struct BetaMemoryId(
+    /// Raw arena index.
+    pub usize,
+);
 
+/// Index handle referencing a Join Node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct JoinNodeId(pub usize);
+pub struct JoinNodeId(
+    /// Raw arena index.
+    pub usize,
+);
 
+/// Index handle referencing a registered Production rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ProductionId(pub usize);
+pub struct ProductionId(
+    /// Raw arena index.
+    pub usize,
+);
 
+/// Storage container for WMEs sharing a common constant Alpha filter test.
 #[derive(Debug, Clone, Default)]
 pub struct AlphaMemory {
+    /// Constant condition test filter.
     pub test: AlphaTest,
+    /// Cached WME records passing this alpha filter.
     pub wmes: Vec<WmeRecord>,
+    /// Dependent join nodes attached to this alpha memory.
     pub successors: Vec<JoinNodeId>,
 }
 
+/// Storage container for partial match tokens in the Beta Network.
 #[derive(Debug, Clone, Default)]
 pub struct BetaMemory {
+    /// Tokens representing partial rule matches up to this node.
     pub tokens: Vec<Token>,
+    /// Dependent join nodes listening to token additions.
     pub successors: Vec<JoinNodeId>,
 }
 
+/// Two-input join node evaluating variable binding constraints between Beta and Alpha inputs.
 #[derive(Debug, Clone)]
 pub struct JoinNode {
+    /// Handle to the right-input Alpha Memory.
     pub alpha_memory: AlphaMemoryId,
+    /// Handle to the left-input parent Beta Memory (if any).
     pub parent_beta: Option<BetaMemoryId>,
+    /// Cross-condition variable binding constraints to test.
     pub bindings: Vec<VariableBinding>,
+    /// Handle to the downstream child Beta Memory (if any).
     pub child_beta: Option<BetaMemoryId>,
+    /// Terminal production rule handle satisfied by this join path.
     pub production: Option<ProductionId>,
 }
 
-/// Active rule instantiation ready to fire.
+/// Active rule instantiation generated when a full RETE match path is satisfied.
 #[derive(Debug, Clone)]
 pub struct Instantiation {
+    /// Production rule identifier label.
     pub rule_name: &'static str,
+    /// Complete collection of WME records satisfying the production.
     pub matched_wmes: Vec<WmeRecord>,
 }
 
-/// Bounded, index-based RETE match engine.
+/// Index-based, deterministic RETE match network engine.
 #[derive(Debug, Default)]
 pub struct ReteNetwork {
+    /// Arena storage for Alpha Memories.
     pub alpha_memories: Vec<AlphaMemory>,
+    /// Arena storage for Beta Memories.
     pub beta_memories: Vec<BetaMemory>,
+    /// Arena storage for Join Nodes.
     pub join_nodes: Vec<JoinNode>,
+    /// List of registered production rule descriptors.
     pub productions: Vec<(&'static str, ProductionId)>,
+    /// Active rule instantiations ready for execution.
     pub activations: Vec<Instantiation>,
 }
 
 impl ReteNetwork {
+    /// Creates a new, empty RETE match network.
     pub fn new() -> Self {
         Self::default()
     }
@@ -210,7 +260,6 @@ impl ReteNetwork {
 
         match join.parent_beta {
             None => {
-                // First condition in rule
                 let token = Token { wmes: alloc::vec![wme.clone()] };
                 self.propagate_token(&join, token);
             }
@@ -232,7 +281,7 @@ impl ReteNetwork {
             self.beta_memories[beta_id.0].tokens.push(token.clone());
             let successors = self.beta_memories[beta_id.0].successors.clone();
             for succ_id in successors {
-                self.left_activate_join(succ_id, token.clone()); // <-- Pass token.clone() instead of &token
+                self.left_activate_join(succ_id, token.clone());
             }
         }
 
