@@ -16,6 +16,8 @@ pub mod preference;
 pub mod production;
 /// Index-based RETE pattern matching engine.
 pub mod rete;
+/// Semantic Memory enables the agent to store non-perishable semantic knowledge outside Working Memory and retrieve facts on-demand into Working Memory via query cues.
+pub mod smem;
 /// Global symbol interning table and identifier system.
 pub mod symbol;
 /// Working memory arena and element management.

@@ -3,6 +3,7 @@ use crate::impasse::{ImpasseType, SubstateRecord};
 use crate::learning::ChunkBuilder;
 use crate::preference::{resolve_preferences, DecisionResult, Preference};
 use crate::rete::{AlphaTest, ReteNetwork, VariableBinding};
+use crate::smem::{LtiId, SemanticMemory};
 use crate::symbol::{SymbolId, SymbolTable};
 use crate::wm::{SupportType, WmeArena, WmeKey};
 
@@ -48,6 +49,8 @@ pub struct SoarAgent {
     pub wm: WmeArena,
     /// Index-based RETE match engine.
     pub rete: ReteNetwork,
+    /// Long-term declarative Semantic Memory store.
+    pub smem: SemanticMemory,
     /// Active phase of the Soar decision cycle.
     pub current_phase: Phase,
     /// Active operator preference pool maintained across decision cycles.
@@ -76,6 +79,7 @@ impl SoarAgent {
             symbols: SymbolTable::new(),
             wm: WmeArena::new(),
             rete: ReteNetwork::new(),
+            smem: SemanticMemory::new(),
             current_phase: Phase::Input,
             preferences: Vec::new(),
             selected_operator: None,
@@ -109,6 +113,26 @@ impl SoarAgent {
     pub fn remove_wme(&mut self, key: WmeKey) {
         self.wm.remove(key);
         self.rete.remove_wme(key);
+    }
+
+    /// Queries Semantic Memory for an LTI matching an attribute-value cue and copies facts into Working Memory under `target_id`.
+    pub fn retrieve_smem_to_wm(
+        &mut self,
+        cue_attr: SymbolId,
+        cue_val: SymbolId,
+        target_id: SymbolId,
+    ) -> Option<LtiId> {
+        if let Some(lti) = self.smem.query(cue_attr, cue_val) {
+            if let Some(facts) = self.smem.retrieve(lti) {
+                let facts_clone = facts.to_vec();
+                for fact in facts_clone {
+                    self.insert_wme(target_id, fact.attr, fact.val);
+                }
+            }
+            Some(lti)
+        } else {
+            None
+        }
     }
 
     /// Runs the Proposal Phase: Elaboration rules fire until RETE reaches quiescence.
