@@ -1,89 +1,113 @@
-use slotmap::{new_key_type, SlotMap};
+//! Working Memory Arena for element storage and support management.
+
+use alloc::vec::Vec;
 use crate::symbol::SymbolId;
 
-new_key_type! {
-    /// Generational 64-bit key used to reference WMEs without raw pointers.
-    pub struct WmeKey;
-}
-
-/// Memory lifecycle support classification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Support classification for Working Memory assertions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SupportType {
-    /// Instantiation Support: Retracts automatically when creating rule LHS becomes false.
+    /// Instantiation support tied to rule match justifications.
     ISupport,
-    /// Operator Support: Persists until explicitly removed or overwritten by another operator.
+    /// Operator support persisting beyond rule match retracts.
     OSupport,
 }
 
-/// Working Memory Element triple: (Identifier ^Attribute Value)
+/// Unique handle key referencing a Working Memory Element in the arena.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WmeKey(pub usize);
+
+/// Fundamental Working Memory Element (WME) representing an (Identifier, Attribute, Value) triple.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Wme {
-    /// Root Identifier (e.g., S1)
+    /// Handle key in arena.
+    pub key: WmeKey,
+    /// Triple subject identifier symbol.
     pub id: SymbolId,
-    /// Attribute edge (e.g., ^sensor-status)
-    pub attribute: SymbolId,
-    /// Value node or scalar (e.g., offline)
-    pub value: SymbolId,
-    /// Monotonically increasing sequence ID for fine-grained retraction tracking
-    pub timetag: u64,
-    /// Memory persistence type
+    /// Triple predicate attribute symbol.
+    pub attr: SymbolId,
+    /// Triple object value symbol.
+    pub val: SymbolId,
+    /// Architectural support type.
     pub support: SupportType,
 }
 
-/// Zero-GC generational arena for Working Memory Element storage.
+/// Memory arena managing active WME instances.
+#[derive(Debug, Default)]
 pub struct WmeArena {
-    storage: SlotMap<WmeKey, Wme>,
-    next_timetag: u64,
+    storage: Vec<Option<Wme>>,
+    count: usize,
 }
 
 impl WmeArena {
-    /// Initializes an empty WME Arena.
+    /// Creates a new empty `WmeArena`.
     pub fn new() -> Self {
         Self {
-            storage: SlotMap::with_key(),
-            next_timetag: 1,
+            storage: Vec::new(),
+            count: 0,
         }
     }
 
-    /// Inserts a new WME triple into the arena, returning a safe generational `WmeKey`.
-    pub fn insert(&mut self, id: SymbolId, attribute: SymbolId, value: SymbolId, support: SupportType) -> WmeKey {
-        let timetag = self.next_timetag;
-        self.next_timetag += 1;
-
+    /// Inserts a new WME triple into the arena, returning its handle key.
+    pub fn insert(
+        &mut self,
+        id: SymbolId,
+        attr: SymbolId,
+        val: SymbolId,
+        support: SupportType,
+    ) -> WmeKey {
+        let key = WmeKey(self.storage.len());
         let wme = Wme {
+            key,
             id,
-            attribute,
-            value,
-            timetag,
+            attr,
+            val,
             support,
         };
-
-        self.storage.insert(wme)
+        self.storage.push(Some(wme));
+        self.count += 1;
+        key
     }
 
-    /// Removes a WME using its key. Stale key references immediately become invalid in O(1).
+    /// Retracts a WME from the arena by handle key.
     pub fn remove(&mut self, key: WmeKey) -> Option<Wme> {
-        self.storage.remove(key)
+        if key.0 < self.storage.len() {
+            let removed = self.storage[key.0].take();
+            if removed.is_some() {
+                self.count -= 1;
+            }
+            removed
+        } else {
+            None
+        }
     }
 
-    /// Immutable lookup for a WME by generational key.
+    /// Retrieves a reference to a WME by handle key.
     pub fn get(&self, key: WmeKey) -> Option<&Wme> {
-        self.storage.get(key)
+        self.storage.get(key.0)?.as_ref()
     }
 
-    /// Returns the total number of active WMEs currently in Working Memory.
+    /// Collects all active WME keys matching a given identifier symbol.
+    pub fn wmes_by_id(&self, id: SymbolId) -> Vec<WmeKey> {
+        self.storage
+            .iter()
+            .filter_map(|opt| {
+                if let Some(wme) = opt {
+                    if wme.id == id {
+                        return Some(wme.key);
+                    }
+                }
+                None
+            })
+            .collect()
+    }
+
+    /// Returns the total active WME count in memory.
     pub fn len(&self) -> usize {
-        self.storage.len()
+        self.count
     }
 
-    /// Returns true if Working Memory contains no active WMEs.
+    /// Returns `true` if the arena contains no active WMEs.
     pub fn is_empty(&self) -> bool {
-        self.storage.is_empty()
-    }
-}
-
-impl Default for WmeArena {
-    fn default() -> Self {
-        Self::new()
+        self.count == 0
     }
 }

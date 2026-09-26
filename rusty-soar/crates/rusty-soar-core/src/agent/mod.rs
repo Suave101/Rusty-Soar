@@ -182,6 +182,7 @@ impl SoarAgent {
     }
 
     /// Runs the Decision Phase: Evaluates preferences to select an operator or create an impasse substate.
+    /// If an operator is selected, active substates under this state are automatically purged.
     pub fn run_decision_phase(&mut self, state_id: SymbolId) -> DecisionResult {
         self.current_phase = Phase::Decision;
         let result = resolve_preferences(state_id, &self.preferences);
@@ -189,6 +190,8 @@ impl SoarAgent {
         match &result {
             DecisionResult::Selected(op_id) => {
                 self.selected_operator = Some(*op_id);
+                // Purge active substates created for this superstate
+                self.purge_substates_for_superstate(state_id);
             }
             DecisionResult::TieImpasse(candidates) => {
                 self.selected_operator = None;
@@ -205,6 +208,28 @@ impl SoarAgent {
         }
 
         result
+    }
+
+    /// Recursively purges a substate and all associated Working Memory elements from the agent.
+    pub fn purge_substates_for_superstate(&mut self, superstate_id: SymbolId) {
+        let mut to_remove = Vec::new();
+
+        for (idx, record) in self.substates.iter().enumerate() {
+            if record.superstate_id == superstate_id {
+                to_remove.push((idx, record.substate_id));
+            }
+        }
+
+        // Process in reverse to maintain slice index validity
+        for (idx, substate_id) in to_remove.into_iter().rev() {
+            // Remove all WMEs associated with the substate ID
+            let wme_keys = self.wm.wmes_by_id(substate_id);
+            for key in wme_keys {
+                self.remove_wme(key);
+            }
+
+            self.substates.remove(idx);
+        }
     }
 
     /// Runs Application Phase rules matching the currently selected operator until quiescence.
