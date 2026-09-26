@@ -9,3 +9,6 @@ Legacy cognitive architectures, specifically the Soar cognitive engine, offer ro
 Current autonomous control architectures suffer from a critical trilemma: they force a choice between real-time determinism, memory safety, and formal certifiability.
 
 Deployed autonomous systems cannot reconcile adaptive neural perception (e.g., Self-Supervised and Continual Learning) with bit-precise symbolic safety bounds, resulting in an "AI Certification Paradox" where advanced cognitive capabilities cannot be certified for flight.
+
+<img width="482" height="482" alt="TriangleOfDispair" src="https://github.com/user-attachments/assets/9a100f4a-bdeb-4c3c-b1c3-61122f48d4b4" />
+
