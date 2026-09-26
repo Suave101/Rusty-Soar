@@ -13,6 +13,7 @@ categories = ["embedded", "science"]
 [workspace]
 members = [
     "crates/rusty-soar-core",
+    "crates/formal-soar-verify",
 ]
 resolver = "2"
 

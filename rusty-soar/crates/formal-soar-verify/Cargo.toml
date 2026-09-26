@@ -1,0 +1,11 @@
+[package]
+name = "formal-soar-verify"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rusty-soar-core = { path = "../rusty-soar-core" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

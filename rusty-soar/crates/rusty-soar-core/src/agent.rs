@@ -76,8 +76,11 @@ impl Agent {
         // 1. Input Phase
         self.current_phase = Phase::Input;
 
-        // 2. Elaboration Phase (rule matching to quiescence)
+        // 2. Elaboration Phase: drain Rete instantiations and collect candidate preferences
         self.current_phase = Phase::Elaboration;
+        for inst in self.rete.instantiations.drain(..) {
+            self.preference_buffer.extend(inst.preferences);
+        }
 
         // 3. Decision Phase (evaluate operator preferences)
         self.current_phase = Phase::Decision;
