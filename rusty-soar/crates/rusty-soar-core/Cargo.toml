@@ -2,13 +2,23 @@
 name = "rusty-soar-core"
 version = "1.0.0"
 edition = "2021"
+description = "Core Soar cognitive architecture engine with formal verification and AADL contract bridging."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/your-org/Rusty-Soar"
+documentation = "https://docs.rs/rusty-soar-core"
+readme = "../../README.md"
 build = "build.rs"
-include = ["src/**/*", "rules/**/*", "build.rs", "Cargo.toml"]
-description = "Core cognitive kernel for rusty-soar supporting RETE, TMS, EPMEM, SMEM, and RL."
+
+include = [
+    "src/**/*",
+    "rules/**/*",
+    "examples/**/*",
+    "tests/**/*",
+    "build.rs",
+    "Cargo.toml",
+]
 
 [dependencies]
 hashbrown = { workspace = true }
 heapless = "0.9.3"
 slotmap = { workspace = true }
-
-[dev-dependencies]
