@@ -1,6 +1,6 @@
 [package]
 name = "rusty-soar"
-version = "1.0.0"
+version = "2.0.0"
 edition = "2021"
 authors = ["Alexander Doyle <adoyle2025@my.fit.edu>"]
 description = "A certifiable, zero-GC, `#![no_std]` Rust implementation of the Soar cognitive engine."
