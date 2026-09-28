@@ -4,19 +4,10 @@ version = "1.0.0"
 edition = "2021"
 description = "Core Soar cognitive architecture engine with formal verification and AADL contract bridging."
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/your-org/Rusty-Soar"
+repository = "https://github.com/suave101/Rusty-Soar"
 documentation = "https://docs.rs/rusty-soar-core"
 readme = "../../README.md"
 build = "build.rs"
-
-include = [
-    "src/**/*",
-    "rules/**/*",
-    "examples/**/*",
-    "tests/**/*",
-    "build.rs",
-    "Cargo.toml",
-]
 
 [dependencies]
 hashbrown = { workspace = true }
