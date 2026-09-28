@@ -1,0 +1,20 @@
+package FlightControlPkg
+public
+  system FlightController
+    features
+      sensor_valid: in data port;
+      engine_status: in data port;
+      altitude_ft: in data port;
+      operator_id: out data port;
+      target_altitude_ft: out data port;
+      is_valid: out data port;
+    annex agree {**
+      assume "A01_VALID_INPUT": sensor_valid = true;
+      
+      guarantee "G01_PROPAGATE_VALIDITY": is_valid = true;
+      guarantee "G02_EMERGENCY_OPERATOR": (engine_status = 2) => (operator_id = 99);
+      guarantee "G03_EMERGENCY_ALTITUDE": (engine_status = 2) => (target_altitude_ft = 0.0);
+      guarantee "G04_NOMINAL_OPERATOR": (engine_status = 0) => (operator_id = 10);
+    **};
+  end FlightController;
+end FlightControlPkg;

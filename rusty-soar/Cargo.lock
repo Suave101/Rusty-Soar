@@ -115,6 +115,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "soar-cli"
+version = "1.0.0"
+dependencies = [
+ "rusty-soar-core",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

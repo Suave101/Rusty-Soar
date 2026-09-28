@@ -1,0 +1,7 @@
+[package]
+name = "soar-cli"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+rusty-soar-core = { path = "../rusty-soar-core" }

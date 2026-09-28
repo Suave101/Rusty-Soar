@@ -30,6 +30,8 @@ pub mod tms;
 pub mod wm;
 /// Formal verification bridge proving hardware equivalence between AADL/AGREE contracts and the Rust implementation.
 pub mod aadl_bridge;
+/// Parser for soar scripts
+pub mod soar_parser;
 
 /// Alias `preference` as `decision` for module path compatibility.
 pub use preference as decision;
