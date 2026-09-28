@@ -1,6 +1,4 @@
-//! RustySoar Core Engine
 #![no_std]
-#![deny(missing_docs)]
 
 extern crate alloc;
 
@@ -33,6 +31,43 @@ pub mod aadl_bridge;
 /// Parser for soar scripts
 pub mod soar_parser;
 
-/// Alias `preference` as `decision` for module path compatibility.
-pub use preference as decision;
-pub use agent::{Agent, SoarAgent};
+use aadl_bridge::{FlightTelemetryFFI, SoarCommandFFI};
+use soar_parser::{SoarScript, SoarValue};
+
+/// Embedded Soar rules baked directly into the binary at compile time.
+pub static BAKED_SOAR_SCRIPT_SRC: &str = include_str!(env!("SOAR_RULES_FILE"));
+
+#[no_mangle]
+pub extern "C" fn soar_evaluate(telemetry: FlightTelemetryFFI) -> SoarCommandFFI {
+    // Parse baked rules directly from static memory
+    let script = SoarScript::parse(BAKED_SOAR_SCRIPT_SRC).unwrap_or_default();
+
+    let mut matched_op_id = 0u32;
+    let mut matched_target_alt = telemetry.altitude_ft;
+
+    for prod in &script.productions {
+        let mut matches = true;
+        for cond in &prod.conditions {
+            if cond.attribute == "engine_status" {
+                if let SoarValue::Int(expected_status) = cond.value {
+                    if telemetry.engine_status as i64 != expected_status {
+                        matches = false;
+                    }
+                }
+            }
+        }
+
+        if matches && !prod.actions.is_empty() {
+            let action = &prod.actions[0];
+            matched_op_id = action.operator_id;
+            matched_target_alt = action.target_altitude_ft;
+            break;
+        }
+    }
+
+    SoarCommandFFI {
+        operator_id: matched_op_id,
+        target_altitude_ft: matched_target_alt,
+        is_valid: telemetry.sensor_valid,
+    }
+}

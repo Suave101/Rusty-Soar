@@ -1,0 +1,19 @@
+# Emergency Override Rule
+sp {propose*emergency*descent
+    (state <s> ^io.input-link.engine_status 2)
+-->
+    (<s> ^operator <o> +)
+    (<o> ^name emergency-descent
+         ^operator_id 99
+         ^target_altitude_ft 0.0)
+}
+
+# Nominal Cruise Rule
+sp {propose*maintain*cruise
+    (state <s> ^io.input-link.engine_status 0)
+-->
+    (<s> ^operator <o> +)
+    (<o> ^name maintain-cruise
+         ^operator_id 10
+         ^target_altitude_ft 10000.0)
+}
