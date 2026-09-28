@@ -1,11 +1,11 @@
 [package]
 name = "rusty-soar-cli"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 description = "CLI tool to verify native Soar production rules against AADL AGREE contracts and cross-compile verified agents."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/suave101/Rusty-Soar"
-documentation = "https://docs.rs/soar-cli"
+documentation = "https://docs.rs/rusty-soar-cli"
 readme = "../../README.md"
 
 [dependencies]
