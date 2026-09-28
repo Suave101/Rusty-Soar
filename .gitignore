@@ -12,3 +12,5 @@ rusty-soar/Cargo.lock
 .DS_Store
 .env
 *.env
+
+AGENTS.md

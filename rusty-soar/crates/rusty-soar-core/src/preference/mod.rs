@@ -1,8 +1,8 @@
 //! Architectural preference evaluation and decision procedure.
 
+use alloc::vec::Vec;
 use crate::rl::ReinforcementLearning;
 use crate::symbol::SymbolId;
-use alloc::vec::Vec;
 
 /// Categorical semantics for operator preferences asserted into Working Memory.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,6 +15,18 @@ pub enum PreferenceType {
     Better(SymbolId),
     /// Asserts that operator A is less preferred than operator B.
     Worse(SymbolId),
+    /// Requires this operator to be selected.
+    Require,
+    /// Prohibits this operator from selection.
+    Prohibit,
+    /// Marks this operator as better than candidates without a best preference.
+    Best,
+    /// Marks this operator as a fallback choice.
+    Worst,
+    /// Declares this operator indifferent to the remaining candidates.
+    Indifferent,
+    /// Declares this operator numerically indifferent; the deterministic resolver uses its RL value.
+    NumericIndifferent,
 }
 
 /// Architectural preference entry for an operator candidate within a substate.
@@ -53,15 +65,35 @@ pub fn resolve_preferences_with_rl(
     preferences: &[Preference],
     rl: &ReinforcementLearning,
 ) -> DecisionResult {
-    let state_prefs: Vec<&Preference> =
-        preferences.iter().filter(|p| p.state == state_id).collect();
+    let state_prefs: Vec<&Preference> = preferences
+        .iter()
+        .filter(|p| p.state == state_id)
+        .collect();
 
-    // 1. Extract explicitly rejected operators
+    // 1. Apply hard constraints before collecting candidates.
     let rejected: Vec<SymbolId> = state_prefs
         .iter()
-        .filter(|p| p.preference_type == PreferenceType::Reject)
+        .filter(|p| {
+            matches!(
+                p.preference_type,
+                PreferenceType::Reject | PreferenceType::Prohibit
+            )
+        })
         .map(|p| p.operator)
         .collect();
+    let required: Vec<SymbolId> = state_prefs
+        .iter()
+        .filter(|p| p.preference_type == PreferenceType::Require)
+        .map(|p| p.operator)
+        .collect();
+
+    if required.len() > 1 || required.iter().any(|operator| rejected.contains(operator)) {
+        return DecisionResult::ConflictImpasse(required);
+    }
+
+    if let Some(&operator) = required.first() {
+        return DecisionResult::Selected(operator);
+    }
 
     // 2. Collect acceptable candidates not in rejected list
     let mut candidates: Vec<SymbolId> = state_prefs
@@ -104,6 +136,38 @@ pub fn resolve_preferences_with_rl(
 
     if candidates.len() == 1 {
         return DecisionResult::Selected(candidates[0]);
+    }
+
+    let best: Vec<SymbolId> = candidates
+        .iter()
+        .copied()
+        .filter(|operator| {
+            state_prefs.iter().any(|preference| {
+                preference.operator == *operator
+                    && preference.preference_type == PreferenceType::Best
+            })
+        })
+        .collect();
+    if !best.is_empty() {
+        candidates = best;
+    }
+
+    if candidates.len() == 1 {
+        return DecisionResult::Selected(candidates[0]);
+    }
+
+    let non_worst: Vec<SymbolId> = candidates
+        .iter()
+        .copied()
+        .filter(|operator| {
+            !state_prefs.iter().any(|preference| {
+                preference.operator == *operator
+                    && preference.preference_type == PreferenceType::Worst
+            })
+        })
+        .collect();
+    if !non_worst.is_empty() {
+        candidates = non_worst;
     }
 
     // 3. Multi-candidate tie-breaking using RL Q-values Q(s, a)

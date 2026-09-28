@@ -1,15 +1,15 @@
+use alloc::{boxed::Box, format, vec, vec::Vec};
 use crate::epmem::{EpisodeId, EpisodicMemory};
 use crate::impasse::{ImpasseType, SubstateRecord};
 use crate::learning::ChunkBuilder;
 use crate::preference::{resolve_preferences_with_rl, DecisionResult, Preference};
-use crate::rete::{AlphaTest, ReteNetwork, VariableBinding};
+use crate::rete::{AlphaTest, Field, ReteNetwork, VariableBinding};
 use crate::rl::ReinforcementLearning;
+use crate::soar_parser::{SoarPreference, SoarScript, SoarValue};
 use crate::smem::{LtiId, SemanticMemory};
-use crate::soar_parser::{SoarScript, SoarValue};
 use crate::symbol::{SymbolId, SymbolTable};
 use crate::tms::TruthMaintenanceSystem;
 use crate::wm::{SupportType, WmeArena, WmeKey};
-use alloc::{boxed::Box, format, vec, vec::Vec};
 
 const MAX_ELABORATION_CYCLES: usize = 10;
 
@@ -122,30 +122,67 @@ impl SoarAgent {
 
     /// Installs parsed Soar productions using the current state as the flat WME identifier.
     ///
-    /// This adapter intentionally supports the deterministic attribute/value subset represented
-    /// by `SoarScript`. Nested identifier joins and arbitrary RHS commands remain parser-level
-    /// data until their richer AST representation is added.
+    /// This adapter intentionally supports the deterministic attribute/value and identifier-join
+    /// subset represented by `SoarScript`. Relational tests and arbitrary RHS commands remain
+    /// parser-level data until their richer AST representation is added.
     pub fn install_soar_script(&mut self, script: &SoarScript, state_id: SymbolId) {
         for production in &script.productions {
+            let mut variables: Vec<(String, usize, Field)> = Vec::new();
             let conditions = production
                 .conditions
                 .iter()
-                .map(|condition| {
-                    let attr = self.symbols.intern_str(&condition.attribute);
+                .enumerate()
+                .map(|(condition_index, condition)| {
+                    let attr = condition
+                        .attribute_variable
+                        .is_none()
+                        .then(|| self.symbols.intern_str(&condition.attribute));
                     let value = match &condition.value {
                         SoarValue::Symbol(value) => value.clone(),
                         SoarValue::Int(value) => format!("{}", value),
                         SoarValue::Float(value) => format!("{}", value),
                         SoarValue::Bool(value) => format!("{}", value),
                     };
-                    let val = self.symbols.intern_str(&value);
+                    let val = condition
+                        .value_variable
+                        .is_none()
+                        .then(|| self.symbols.intern_str(&value));
+                    let id = if condition_index == 0
+                        && condition.identifier.as_deref().is_some_and(|id| id == "state" || id == "<s>")
+                    {
+                        Some(state_id)
+                    } else {
+                        None
+                    };
+                    let mut bindings = Vec::new();
+                    Self::add_variable_binding(
+                        &mut variables,
+                        &mut bindings,
+                        condition.identifier.as_deref(),
+                        condition_index,
+                        Field::Id,
+                    );
+                    Self::add_variable_binding(
+                        &mut variables,
+                        &mut bindings,
+                        condition.attribute_variable.as_deref(),
+                        condition_index,
+                        Field::Attr,
+                    );
+                    Self::add_variable_binding(
+                        &mut variables,
+                        &mut bindings,
+                        condition.value_variable.as_deref(),
+                        condition_index,
+                        Field::Val,
+                    );
                     (
                         AlphaTest {
-                            id: Some(state_id),
-                            attr: Some(attr),
-                            val: Some(val),
+                            id,
+                            attr,
+                            val,
                         },
-                        Vec::new(),
+                        bindings,
                     )
                 })
                 .collect();
@@ -154,6 +191,28 @@ impl SoarAgent {
                 continue;
             };
             let operator = self.symbols.intern_str(&action.operator_name);
+            let preference_type = match &action.preference {
+                SoarPreference::Acceptable => PreferenceType::Acceptable,
+                SoarPreference::Reject => PreferenceType::Reject,
+                SoarPreference::Require => PreferenceType::Require,
+                SoarPreference::Prohibit => PreferenceType::Prohibit,
+                SoarPreference::Better(other) => PreferenceType::Better(
+                    other
+                        .as_deref()
+                        .map(|value| self.symbols.intern_str(value))
+                        .unwrap_or(operator),
+                ),
+                SoarPreference::Worse(other) => PreferenceType::Worse(
+                    other
+                        .as_deref()
+                        .map(|value| self.symbols.intern_str(value))
+                        .unwrap_or(operator),
+                ),
+                SoarPreference::Best => PreferenceType::Best,
+                SoarPreference::Worst => PreferenceType::Worst,
+                SoarPreference::Indifferent(_) => PreferenceType::Indifferent,
+                SoarPreference::NumericIndifferent => PreferenceType::NumericIndifferent,
+            };
             let rule_name: &'static str = Box::leak(production.name.clone().into_boxed_str());
             self.add_rule(
                 rule_name,
@@ -161,14 +220,41 @@ impl SoarAgent {
                 vec![Action::Prefer(Preference {
                     state: state_id,
                     operator,
-                    preference_type: crate::preference::PreferenceType::Acceptable,
+                    preference_type,
                 })],
             );
         }
     }
 
+    fn add_variable_binding(
+        variables: &mut Vec<(String, usize, Field)>,
+        bindings: &mut Vec<VariableBinding>,
+        variable: Option<&str>,
+        condition_index: usize,
+        field: Field,
+    ) {
+        let Some(variable) = variable.filter(|value| value.starts_with('<')) else {
+            return;
+        };
+        if let Some((_, token_wme_index, token_field)) =
+            variables.iter().find(|(name, _, _)| name == variable)
+        {
+            bindings.push(VariableBinding {
+                token_wme_index: *token_wme_index,
+                token_field: *token_field,
+                wme_field: field,
+            });
+        } else {
+            variables.push((variable.to_string(), condition_index, field));
+        }
+    }
+
     /// Synchronizes Working Memory insertions into the RETE network.
     pub fn insert_wme(&mut self, s: SymbolId, a: SymbolId, v: SymbolId) -> WmeKey {
+        if let Some(existing) = self.wm.find(s, a, v) {
+            return existing;
+        }
+
         let key = self.wm.insert(s, a, v, SupportType::ISupport);
         self.rete.add_wme(key, s, a, v);
         key
@@ -227,10 +313,8 @@ impl SoarAgent {
             total_fires += activations.len();
 
             for inst in activations {
-                if let Some((_, actions)) = self
-                    .rule_actions
-                    .iter()
-                    .find(|(name, _)| *name == inst.rule_name)
+                if let Some((_, actions)) =
+                    self.rule_actions.iter().find(|(name, _)| *name == inst.rule_name)
                 {
                     let actions_to_run = actions.clone();
                     let mut derived_wmes = Vec::new();
@@ -265,8 +349,11 @@ impl SoarAgent {
                         let supporting_keys: Vec<WmeKey> =
                             inst.matched_wmes.iter().map(|w| w.key).collect();
 
-                        self.tms
-                            .add_justification(inst.rule_name, supporting_keys, derived_wmes);
+                        self.tms.add_justification(
+                            inst.rule_name,
+                            supporting_keys,
+                            derived_wmes,
+                        );
                     }
                 }
             }
@@ -286,9 +373,7 @@ impl SoarAgent {
             vec![],
         )];
 
-        let chunk = self
-            .chunk_builder
-            .build_chunk(superstate_conditions, result_action);
+        let chunk = self.chunk_builder.build_chunk(superstate_conditions, result_action);
         self.chunks_learned += 1;
 
         self.add_rule(chunk.name, chunk.conditions, chunk.actions);

@@ -21,10 +21,47 @@ pub enum SoarValue {
 /// Attribute-Value condition inside a Soar production LHS.
 #[derive(Debug, Clone)]
 pub struct SoarCondition {
+    /// Identifier test for the condition object, when present.
+    pub identifier: Option<String>,
     /// Attribute path (e.g., `"engine_status"`).
     pub attribute: String,
+    /// Attribute variable, when the rule binds a variable in the attribute position.
+    pub attribute_variable: Option<String>,
     /// Target value to match.
     pub value: SoarValue,
+    /// Value variable, when the rule binds a variable in the value position.
+    pub value_variable: Option<String>,
+}
+
+/// Preference marker parsed from an operator RHS action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SoarPreference {
+    /// Candidate operator preference.
+    Acceptable,
+    /// Reject, require, or prohibit the operator.
+    Reject,
+    Require,
+    Prohibit,
+    /// Relative and absolute desirability markers.
+    Better(Option<String>),
+    Worse(Option<String>),
+    Best,
+    Worst,
+    Indifferent(Option<String>),
+    NumericIndifferent,
+}
+
+/// A literal or variable-bound WME mutation on a production RHS.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SoarWmeAction {
+    /// RHS identifier expression, such as `<s>` or `<out>`.
+    pub identifier: String,
+    /// Attribute constant.
+    pub attribute: String,
+    /// RHS value expression.
+    pub value: SoarValue,
+    /// Whether this action removes rather than asserts the WME.
+    pub remove: bool,
 }
 
 /// Proposed operator action inside a Soar production RHS.
@@ -36,6 +73,8 @@ pub struct SoarAction {
     pub operator_id: u32,
     /// Target altitude action setting.
     pub target_altitude_ft: f32,
+    /// Preference semantics associated with the operator action.
+    pub preference: SoarPreference,
 }
 
 /// AST representation of a Soar Production (`sp { ... }`).
@@ -47,6 +86,8 @@ pub struct SoarProduction {
     pub conditions: Vec<SoarCondition>,
     /// Right-Hand Side (RHS) proposed actions.
     pub actions: Vec<SoarAction>,
+    /// Working-memory mutations on the RHS.
+    pub wme_actions: Vec<SoarWmeAction>,
 }
 
 /// Errors encountered while parsing `.soar` scripts.
@@ -161,7 +202,10 @@ impl SoarScript {
 
                     let rule_body: String = chars[body_start..k].iter().collect();
                     let rule_name_override = header_text.trim();
-                    productions.push(Self::parse_production_body(&rule_body, rule_name_override)?);
+                    productions.push(Self::parse_production_body(
+                        &rule_body,
+                        rule_name_override,
+                    )?);
 
                     i = k + 1;
                     continue;
@@ -189,9 +233,7 @@ impl SoarScript {
             let args_start = content[header_start..]
                 .find('{')
                 .map(|offset| header_start + offset)
-                .ok_or_else(|| {
-                    SoarParseError::InvalidSyntax("Procedure missing arguments".into())
-                })?;
+                .ok_or_else(|| SoarParseError::InvalidSyntax("Procedure missing arguments".into()))?;
             let args_end = Self::matching_brace(&content, args_start)?;
             let body_start = content[args_end + 1..]
                 .find('{')
@@ -212,9 +254,7 @@ impl SoarScript {
                 let loop_variable = body[foreach_start..loop_args_end]
                     .split_whitespace()
                     .next()
-                    .ok_or_else(|| {
-                        SoarParseError::InvalidSyntax("foreach missing variable".into())
-                    })?
+                    .ok_or_else(|| SoarParseError::InvalidSyntax("foreach missing variable".into()))?
                     .to_string();
                 (
                     body[loop_args_end + 1..loop_body_end].to_string(),
@@ -319,52 +359,141 @@ impl SoarScript {
                 .to_string()
         };
 
-        let name = name.trim_matches('"').trim_matches('\'').to_string();
+        let name = name
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_string();
 
         let mut conditions = Vec::new();
 
         for line in lhs.lines() {
             let line = line.trim();
+            let identifier = line
+                .split('^')
+                .next()
+                .map(str::trim)
+                .and_then(|prefix| {
+                    let tokens: Vec<&str> = prefix
+                        .trim_matches('(')
+                        .split_whitespace()
+                        .collect();
+                    match tokens.as_slice() {
+                        ["state", variable, ..] | ["impasse", variable, ..] => {
+                            Some((*variable).to_string())
+                        }
+                        [variable, ..] if variable.starts_with('<') => {
+                            Some((*variable).to_string())
+                        }
+                        _ => None,
+                    }
+                });
             let chunks: Vec<&str> = line.split('^').collect();
             for chunk in chunks.iter().skip(1) {
                 let clean_chunk = chunk.trim().trim_end_matches(')');
                 let tokens: Vec<&str> = clean_chunk.split_whitespace().collect();
                 if tokens.len() >= 2 {
                     let raw_attr = tokens[0];
+                    let attribute_variable = raw_attr
+                        .starts_with('<')
+                        .then(|| raw_attr.to_string());
                     let attr = raw_attr.rsplit('.').next().unwrap_or(raw_attr).to_string();
                     let val_str = tokens[1].trim_end_matches(')').trim_start_matches('=');
                     let val_str = val_str.trim_end_matches(['u', 'U']);
+                    let value_variable = val_str
+                        .starts_with('<')
+                        .then(|| val_str.to_string());
                     let val = match val_str {
                         "true" => SoarValue::Bool(true),
                         "false" => SoarValue::Bool(false),
                         _ => match val_str.parse::<i64>() {
-                            Ok(i) => SoarValue::Int(i),
-                            Err(_) => match val_str.parse::<f32>() {
-                                Ok(f) => SoarValue::Float(f),
-                                Err(_) => SoarValue::Symbol(val_str.to_string()),
-                            },
+                        Ok(i) => SoarValue::Int(i),
+                        Err(_) => match val_str.parse::<f32>() {
+                            Ok(f) => SoarValue::Float(f),
+                            Err(_) => SoarValue::Symbol(val_str.to_string()),
+                        },
                         },
                     };
                     conditions.push(SoarCondition {
+                        identifier: identifier.clone(),
                         attribute: attr,
+                        attribute_variable,
                         value: val,
+                        value_variable,
                     });
                 }
             }
         }
 
         let mut actions = Vec::new();
+        let mut wme_actions = Vec::new();
         let mut op_name = String::from("default");
         let mut op_id = 0u32;
         let mut target_alt = 0.0f32;
+        let mut preference = SoarPreference::Acceptable;
 
         for line in rhs.lines() {
             let line = line.trim();
+            if line.starts_with("(<") && line.contains('^') {
+                let trimmed = line.trim_end_matches(')');
+                let Some((left, right)) = trimmed.split_once('^') else {
+                    continue;
+                };
+                let Some(identifier) = left.trim_start_matches('(').split_whitespace().next() else {
+                    continue;
+                };
+                let tokens: Vec<&str> = right.split_whitespace().collect();
+                if tokens.len() >= 2 && tokens[0] != "operator" {
+                    let mut value_token = tokens[1].trim_end_matches(',');
+                    let remove = value_token.ends_with('-');
+                    if remove {
+                        value_token = value_token.trim_end_matches('-');
+                    }
+                    let value = if value_token.starts_with('<') {
+                        SoarValue::Symbol(value_token.to_string())
+                    } else if value_token == "true" {
+                        SoarValue::Bool(true)
+                    } else if value_token == "false" {
+                        SoarValue::Bool(false)
+                    } else if let Ok(integer) = value_token.parse::<i64>() {
+                        SoarValue::Int(integer)
+                    } else if let Ok(float) = value_token.parse::<f32>() {
+                        SoarValue::Float(float)
+                    } else {
+                        SoarValue::Symbol(value_token.to_string())
+                    };
+                    wme_actions.push(SoarWmeAction {
+                        identifier: identifier.to_string(),
+                        attribute: tokens[0].to_string(),
+                        value,
+                        remove,
+                    });
+                }
+            }
             if line.contains("^name") {
                 if let Some(val) = line.split("^name").nth(1) {
                     if let Some(token) = val.split_whitespace().next() {
                         op_name = token.trim_end_matches(')').to_string();
                     }
+                }
+            }
+            if let Some(operator) = line.split("^operator").nth(1) {
+                let tokens: Vec<&str> = operator.split_whitespace().collect();
+                if let Some(marker) = tokens.get(1).map(|token| token.trim_matches(',')) {
+                    preference = match *marker {
+                        "+" => SoarPreference::Acceptable,
+                        "-" => SoarPreference::Reject,
+                        "!" => SoarPreference::Require,
+                        "~" => SoarPreference::Prohibit,
+                        ">" => SoarPreference::Better(tokens.get(2).map(|token| token.trim_matches(',').to_string())),
+                        "<" => SoarPreference::Worse(tokens.get(2).map(|token| token.trim_matches(',').to_string())),
+                        "=" if tokens.get(2).and_then(|token| token.parse::<f32>().ok()).is_some() => {
+                            SoarPreference::NumericIndifferent
+                        }
+                        "=" => SoarPreference::Indifferent(tokens.get(2).map(|token| token.trim_matches(',').to_string())),
+                        ">,=" | ">=" => SoarPreference::Best,
+                        "<,=" | "<=" => SoarPreference::Worst,
+                        _ => SoarPreference::Acceptable,
+                    };
                 }
             }
             if line.contains("^operator_id") || line.contains("^op_id") || line.contains("^id") {
@@ -422,12 +551,14 @@ impl SoarScript {
             operator_name: op_name,
             operator_id: op_id,
             target_altitude_ft: target_alt,
+            preference,
         });
 
         Ok(SoarProduction {
             name,
             conditions,
             actions,
+            wme_actions,
         })
     }
 }

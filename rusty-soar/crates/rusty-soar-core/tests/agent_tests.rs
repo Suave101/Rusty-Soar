@@ -26,6 +26,21 @@ fn test_wme_insert_and_retract() {
 }
 
 #[test]
+fn test_working_memory_is_a_set() {
+    let mut agent = SoarAgent::new();
+    let id = agent.symbols.intern_id('S', 1);
+    let attr = agent.symbols.intern_str("status");
+    let value = agent.symbols.intern_str("ready");
+
+    let first = agent.insert_wme(id, attr, value);
+    let second = agent.insert_wme(id, attr, value);
+
+    assert_eq!(first, second);
+    assert_eq!(agent.wm.len(), 1);
+    assert_eq!(agent.rete.activations.len(), 0);
+}
+
+#[test]
 fn test_preference_resolution() {
     let mut agent = SoarAgent::new();
 
@@ -204,9 +219,7 @@ fn test_episodic_memory_captures_sparse_wme_arena() {
     let snapshot = epmem.retrieve(episode).expect("episode should exist");
 
     assert_eq!(snapshot.wmes.len(), 2);
-    assert!(snapshot
-        .wmes
-        .contains(&(SymbolId(7), SymbolId(8), SymbolId(9))));
+    assert!(snapshot.wmes.contains(&(SymbolId(7), SymbolId(8), SymbolId(9))));
 }
 
 #[test]
@@ -239,6 +252,52 @@ fn test_explicit_better_preference_selects_dominant_operator() {
 }
 
 #[test]
+fn test_hard_and_best_preferences_are_deterministic() {
+    let state = SymbolId(2);
+    let required = SymbolId(30);
+    let alternative = SymbolId(31);
+    let preferences = vec![
+        Preference {
+            state,
+            operator: required,
+            preference_type: PreferenceType::Require,
+        },
+        Preference {
+            state,
+            operator: alternative,
+            preference_type: PreferenceType::Acceptable,
+        },
+    ];
+
+    assert_eq!(
+        rusty_soar_core::preference::resolve_preferences(state, &preferences),
+        DecisionResult::Selected(required)
+    );
+
+    let best = vec![
+        Preference {
+            state,
+            operator: required,
+            preference_type: PreferenceType::Acceptable,
+        },
+        Preference {
+            state,
+            operator: alternative,
+            preference_type: PreferenceType::Acceptable,
+        },
+        Preference {
+            state,
+            operator: alternative,
+            preference_type: PreferenceType::Best,
+        },
+    ];
+    assert_eq!(
+        rusty_soar_core::preference::resolve_preferences(state, &best),
+        DecisionResult::Selected(alternative)
+    );
+}
+
+#[test]
 fn test_parsed_soar_script_installs_and_runs() {
     let script = rusty_soar_core::soar_parser::SoarScript::parse(
         r#"
@@ -260,9 +319,37 @@ fn test_parsed_soar_script_installs_and_runs() {
     agent.insert_wme(state, attr, value);
 
     agent.run_elaboration_phase();
+    assert_eq!(agent.run_decision_phase(state), DecisionResult::Selected(
+        agent.symbols.intern_str("demo"),
+    ));
+}
+
+#[test]
+fn test_parsed_soar_script_preserves_identifier_joins() {
+    let script = rusty_soar_core::soar_parser::SoarScript::parse(
+        r#"
+        sp {propose-linked
+            (state <s> ^child <c>)
+            (<c> ^status ready)
+        -->
+            (<s> ^operator <o> +)
+            (<o> ^name linked)
+        }
+        "#,
+    )
+    .expect("script should parse");
+
+    let mut agent = SoarAgent::new();
+    let state = agent.symbols.intern_id('S', 1);
+    let child = agent.symbols.intern_id('C', 1);
+    agent.install_soar_script(&script, state);
+    agent.insert_wme(state, agent.symbols.intern_str("child"), child);
+    agent.insert_wme(child, agent.symbols.intern_str("status"), agent.symbols.intern_str("ready"));
+
+    agent.run_elaboration_phase();
     assert_eq!(
         agent.run_decision_phase(state),
-        DecisionResult::Selected(agent.symbols.intern_str("demo"),)
+        DecisionResult::Selected(agent.symbols.intern_str("linked"))
     );
 }
 
@@ -288,4 +375,44 @@ fn test_generated_soar_rules_expand_foreach_templates() {
     assert_eq!(script.productions.len(), 2);
     assert_eq!(script.productions[0].name, "generated*gps");
     assert_eq!(script.productions[1].name, "generated*lidar");
+}
+
+#[test]
+fn test_soar_preference_markers_are_preserved() {
+    let script = rusty_soar_core::soar_parser::SoarScript::parse(
+        r#"
+        sp {require-demo
+            (state <s> ^ready yes)
+        -->
+            (<s> ^operator <o> !)
+            (<o> ^name required)
+        }
+        "#,
+    )
+    .expect("script should parse");
+
+    assert_eq!(
+        script.productions[0].actions[0].preference,
+        rusty_soar_core::soar_parser::SoarPreference::Require
+    );
+}
+
+#[test]
+fn test_soar_rhs_wme_actions_are_preserved() {
+    let script = rusty_soar_core::soar_parser::SoarScript::parse(
+        r#"
+        sp {apply-demo
+            (state <s> ^operator <o>)
+            (<o> ^name demo)
+        -->
+            (<s> ^result complete)
+            (<s> ^old-value stale -)
+        }
+        "#,
+    )
+    .expect("script should parse");
+
+    assert_eq!(script.productions[0].wme_actions.len(), 2);
+    assert_eq!(script.productions[0].wme_actions[0].attribute, "result");
+    assert!(script.productions[0].wme_actions[1].remove);
 }

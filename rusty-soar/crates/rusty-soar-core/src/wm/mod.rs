@@ -1,7 +1,7 @@
 //! Working Memory Arena for element storage and support management.
 
-use crate::symbol::SymbolId;
 use alloc::vec::Vec;
+use crate::symbol::SymbolId;
 
 /// Support classification for Working Memory assertions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +55,15 @@ impl WmeArena {
         val: SymbolId,
         support: SupportType,
     ) -> WmeKey {
+        if let Some(existing) = self
+            .storage
+            .iter()
+            .flatten()
+            .find(|wme| wme.id == id && wme.attr == attr && wme.val == val)
+        {
+            return existing.key;
+        }
+
         let key = WmeKey(self.storage.len());
         let wme = Wme {
             key,
@@ -84,6 +93,15 @@ impl WmeArena {
     /// Retrieves a reference to a WME by handle key.
     pub fn get(&self, key: WmeKey) -> Option<&Wme> {
         self.storage.get(key.0)?.as_ref()
+    }
+
+    /// Finds an active WME by its identifier, attribute, and value triple.
+    pub fn find(&self, id: SymbolId, attr: SymbolId, val: SymbolId) -> Option<WmeKey> {
+        self.storage
+            .iter()
+            .flatten()
+            .find(|wme| wme.id == id && wme.attr == attr && wme.val == val)
+            .map(|wme| wme.key)
     }
 
     /// Collects all active WME keys matching a given identifier symbol.
