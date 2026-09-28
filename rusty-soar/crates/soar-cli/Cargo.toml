@@ -2,6 +2,11 @@
 name = "soar-cli"
 version = "1.0.0"
 edition = "2021"
+description = "CLI tool to verify native Soar production rules against AADL AGREE contracts and cross-compile verified agents."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/suave101/Rusty-Soar"
+documentation = "https://docs.rs/soar-cli"
+readme = "../../README.md"
 
 [dependencies]
-rusty-soar-core = { path = "../rusty-soar-core" }
+rusty-soar-core = { path = "../rusty-soar-core", version = "1.0.0" }
