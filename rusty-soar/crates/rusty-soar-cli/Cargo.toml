@@ -1,5 +1,5 @@
 [package]
-name = "soar-cli"
+name = "rusty-soar-cli"
 version = "1.0.0"
 edition = "2021"
 description = "CLI tool to verify native Soar production rules against AADL AGREE contracts and cross-compile verified agents."

@@ -14,7 +14,7 @@ categories = ["embedded", "science"]
 members = [
     "crates/rusty-soar-core",
     "crates/formal-soar-verify",
-    "crates/soar-cli",
+    "crates/rusty-soar-cli",
 ]
 resolver = "2"
 
