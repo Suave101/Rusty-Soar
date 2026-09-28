@@ -98,7 +98,7 @@ version = "2.0.0"
 
 [[package]]
 name = "rusty-soar-cli"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "rusty-soar-core",
 ]

@@ -1,4 +1,3 @@
-use alloc::{vec, vec::Vec};
 use crate::epmem::{EpisodeId, EpisodicMemory};
 use crate::impasse::{ImpasseType, SubstateRecord};
 use crate::learning::ChunkBuilder;
@@ -6,9 +5,13 @@ use crate::preference::{resolve_preferences_with_rl, DecisionResult, Preference}
 use crate::rete::{AlphaTest, ReteNetwork, VariableBinding};
 use crate::rl::ReinforcementLearning;
 use crate::smem::{LtiId, SemanticMemory};
+use crate::soar_parser::{SoarScript, SoarValue};
 use crate::symbol::{SymbolId, SymbolTable};
 use crate::tms::TruthMaintenanceSystem;
 use crate::wm::{SupportType, WmeArena, WmeKey};
+use alloc::{boxed::Box, format, vec, vec::Vec};
+
+const MAX_ELABORATION_CYCLES: usize = 10;
 
 /// Decision cycle execution phase for the Soar engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -117,6 +120,53 @@ impl SoarAgent {
         self.rule_actions.push((name, actions));
     }
 
+    /// Installs parsed Soar productions using the current state as the flat WME identifier.
+    ///
+    /// This adapter intentionally supports the deterministic attribute/value subset represented
+    /// by `SoarScript`. Nested identifier joins and arbitrary RHS commands remain parser-level
+    /// data until their richer AST representation is added.
+    pub fn install_soar_script(&mut self, script: &SoarScript, state_id: SymbolId) {
+        for production in &script.productions {
+            let conditions = production
+                .conditions
+                .iter()
+                .map(|condition| {
+                    let attr = self.symbols.intern_str(&condition.attribute);
+                    let value = match &condition.value {
+                        SoarValue::Symbol(value) => value.clone(),
+                        SoarValue::Int(value) => format!("{}", value),
+                        SoarValue::Float(value) => format!("{}", value),
+                        SoarValue::Bool(value) => format!("{}", value),
+                    };
+                    let val = self.symbols.intern_str(&value);
+                    (
+                        AlphaTest {
+                            id: Some(state_id),
+                            attr: Some(attr),
+                            val: Some(val),
+                        },
+                        Vec::new(),
+                    )
+                })
+                .collect();
+
+            let Some(action) = production.actions.first() else {
+                continue;
+            };
+            let operator = self.symbols.intern_str(&action.operator_name);
+            let rule_name: &'static str = Box::leak(production.name.clone().into_boxed_str());
+            self.add_rule(
+                rule_name,
+                conditions,
+                vec![Action::Prefer(Preference {
+                    state: state_id,
+                    operator,
+                    preference_type: crate::preference::PreferenceType::Acceptable,
+                })],
+            );
+        }
+    }
+
     /// Synchronizes Working Memory insertions into the RETE network.
     pub fn insert_wme(&mut self, s: SymbolId, a: SymbolId, v: SymbolId) -> WmeKey {
         let key = self.wm.insert(s, a, v, SupportType::ISupport);
@@ -165,8 +215,10 @@ impl SoarAgent {
     pub fn run_elaboration_phase(&mut self) -> usize {
         self.current_phase = Phase::Proposal;
         let mut total_fires = 0;
+        let mut cycles = 0;
 
-        loop {
+        while cycles < MAX_ELABORATION_CYCLES {
+            cycles += 1;
             let activations = core::mem::take(&mut self.rete.activations);
             if activations.is_empty() {
                 break;
@@ -175,8 +227,10 @@ impl SoarAgent {
             total_fires += activations.len();
 
             for inst in activations {
-                if let Some((_, actions)) =
-                    self.rule_actions.iter().find(|(name, _)| *name == inst.rule_name)
+                if let Some((_, actions)) = self
+                    .rule_actions
+                    .iter()
+                    .find(|(name, _)| *name == inst.rule_name)
                 {
                     let actions_to_run = actions.clone();
                     let mut derived_wmes = Vec::new();
@@ -211,11 +265,8 @@ impl SoarAgent {
                         let supporting_keys: Vec<WmeKey> =
                             inst.matched_wmes.iter().map(|w| w.key).collect();
 
-                        self.tms.add_justification(
-                            inst.rule_name,
-                            supporting_keys,
-                            derived_wmes,
-                        );
+                        self.tms
+                            .add_justification(inst.rule_name, supporting_keys, derived_wmes);
                     }
                 }
             }
@@ -235,7 +286,9 @@ impl SoarAgent {
             vec![],
         )];
 
-        let chunk = self.chunk_builder.build_chunk(superstate_conditions, result_action);
+        let chunk = self
+            .chunk_builder
+            .build_chunk(superstate_conditions, result_action);
         self.chunks_learned += 1;
 
         self.add_rule(chunk.name, chunk.conditions, chunk.actions);
@@ -331,6 +384,7 @@ impl SoarAgent {
         impasse_type: ImpasseType,
         candidates: &[SymbolId],
     ) -> SymbolId {
+        self.purge_substates_for_superstate(superstate_id);
         self.state_counter += 1;
         let substate_id = self.symbols.intern_id('S', self.state_counter as u64);
 

@@ -59,7 +59,11 @@ fn main() {
     agent.run_elaboration_phase();
 
     println!("Post-elaboration WME count: {}", agent.wm.len());
-    assert_eq!(agent.wm.len(), 3, "Expected root WME + 2 derived elaboration WMEs");
+    assert_eq!(
+        agent.wm.len(),
+        3,
+        "Expected root WME + 2 derived elaboration WMEs"
+    );
     assert_eq!(agent.tms.active_justifications_count(), 2);
 
     // Step 3: Retract root WME (light = green) -> Cascading TMS retraction should remove all derived WMEs

@@ -52,8 +52,14 @@ fn main() {
     agent.insert_wme(s1, attr_state, val_state);
 
     // Initial Q-values are 0.0
-    println!("Initial Q(S1, O_left)  = {}", agent.rl.get_q_value(s1, o1_left));
-    println!("Initial Q(S1, O_right) = {}", agent.rl.get_q_value(s1, o2_right));
+    println!(
+        "Initial Q(S1, O_left)  = {}",
+        agent.rl.get_q_value(s1, o1_left)
+    );
+    println!(
+        "Initial Q(S1, O_right) = {}",
+        agent.rl.get_q_value(s1, o2_right)
+    );
 
     // Agent executes O_left and receives a +10.0 environmental reward signal
     agent.rl.add_reward(10.0);

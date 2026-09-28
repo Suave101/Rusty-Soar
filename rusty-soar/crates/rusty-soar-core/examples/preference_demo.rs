@@ -72,7 +72,10 @@ fn main() {
     match decision {
         DecisionResult::Selected(op_id) => {
             println!("Decision Result: Selected Operator {:?}", op_id);
-            assert_eq!(op_id, o1_avoid, "O1 must be selected over O2 via Better preference");
+            assert_eq!(
+                op_id, o1_avoid,
+                "O1 must be selected over O2 via Better preference"
+            );
         }
         other => panic!("Unexpected decision result: {:?}", other),
     }

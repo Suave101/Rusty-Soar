@@ -96,6 +96,28 @@ pub trait SymbolEnvironment {
     fn lookup(&self, var_name: &str) -> Option<AgreeVal>;
 }
 
+fn numeric_values(left: AgreeVal, right: AgreeVal) -> Result<(f32, f32), AgreeError> {
+    let left = match left {
+        AgreeVal::Int(value) => value as f32,
+        AgreeVal::Float(value) => value,
+        AgreeVal::Bool(_) => {
+            return Err(AgreeError::EvalError(
+                "Numeric comparison requires numeric operands".into(),
+            ));
+        }
+    };
+    let right = match right {
+        AgreeVal::Int(value) => value as f32,
+        AgreeVal::Float(value) => value,
+        AgreeVal::Bool(_) => {
+            return Err(AgreeError::EvalError(
+                "Numeric comparison requires numeric operands".into(),
+            ));
+        }
+    };
+    Ok((left, right))
+}
+
 impl AgreeAnnex {
     /// Extracts and parses the `annex agree {** ... **}` block from raw AADL file content.
     pub fn parse_aadl_file(aadl_source: &str) -> Result<Self, AgreeError> {
@@ -107,7 +129,9 @@ impl AgreeAnnex {
         let start_idx = aadl_source
             .find(start_tag)
             .map(|i| i + start_tag.len())
-            .ok_or_else(|| AgreeError::ParseError("No 'annex agree {**' block found in AADL".into()))?;
+            .ok_or_else(|| {
+                AgreeError::ParseError("No 'annex agree {**' block found in AADL".into())
+            })?;
 
         let end_idx = aadl_source[start_idx..]
             .find(end_tag)
@@ -116,15 +140,40 @@ impl AgreeAnnex {
 
         let agree_content = &aadl_source[start_idx..end_idx];
 
-        for line in agree_content.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("assume") {
-                let rule = Self::parse_statement(trimmed, "assume")?;
-                annex.assumes.push(rule);
+        let lines: Vec<&str> = agree_content.lines().collect();
+        let mut line_index = 0;
+        while line_index < lines.len() {
+            let trimmed = lines[line_index].trim();
+            let keyword = if trimmed.starts_with("assume") {
+                Some("assume")
             } else if trimmed.starts_with("guarantee") {
-                let rule = Self::parse_statement(trimmed, "guarantee")?;
-                annex.guarantees.push(rule);
+                Some("guarantee")
+            } else {
+                None
+            };
+
+            if let Some(keyword) = keyword {
+                let mut statement = trimmed.to_string();
+                while !statement.trim_end().ends_with(';') {
+                    line_index += 1;
+                    if line_index >= lines.len() {
+                        return Err(AgreeError::ParseError(
+                            "Unterminated AGREE statement".into(),
+                        ));
+                    }
+                    statement.push(' ');
+                    statement.push_str(lines[line_index].trim());
+                }
+
+                let rule = Self::parse_statement(&statement, keyword)?;
+                if keyword == "assume" {
+                    annex.assumes.push(rule);
+                } else {
+                    annex.guarantees.push(rule);
+                }
             }
+
+            line_index += 1;
         }
 
         Ok(annex)
@@ -132,18 +181,13 @@ impl AgreeAnnex {
 
     fn parse_statement(line: &str, keyword: &str) -> Result<ContractRule, AgreeError> {
         let rest = line.trim_start_matches(keyword).trim();
-        let colon_idx = rest
-            .find(':')
-            .ok_or_else(|| AgreeError::ParseError(format!("Missing ':' in AGREE rule: {}", line)))?;
+        let colon_idx = rest.find(':').ok_or_else(|| {
+            AgreeError::ParseError(format!("Missing ':' in AGREE rule: {}", line))
+        })?;
 
-        let tag = rest[..colon_idx]
-            .trim()
-            .trim_matches('"')
-            .to_string();
+        let tag = rest[..colon_idx].trim().trim_matches('"').to_string();
 
-        let expr_str = rest[colon_idx + 1..]
-            .trim()
-            .trim_end_matches(';');
+        let expr_str = rest[colon_idx + 1..].trim().trim_end_matches(';');
 
         let expr = Self::parse_expr(expr_str)?;
         Ok(ContractRule { tag, expr })
@@ -191,6 +235,13 @@ impl AgreeAnnex {
                         depth -= 1;
                     }
                 } else if depth == 0 && i + op_len <= len && &bytes[i..i + op_len] == op_bytes {
+                    if op == "and" || op == "or" {
+                        let before = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
+                        let after = i + op_len == len || !bytes[i + op_len].is_ascii_alphanumeric();
+                        if !before || !after {
+                            continue;
+                        }
+                    }
                     return Some(i);
                 }
             }
@@ -200,28 +251,41 @@ impl AgreeAnnex {
         if let Some(pos) = find_top_level_op(s, "=>") {
             let left = Self::parse_expr(&s[..pos])?;
             let right = Self::parse_expr(&s[pos + 2..])?;
-            return Ok(Expr::Binary(Box::new(left), BinOp::Implies, Box::new(right)));
+            return Ok(Expr::Binary(
+                Box::new(left),
+                BinOp::Implies,
+                Box::new(right),
+            ));
         }
 
-        if let Some(pos) = find_top_level_op(s, "=") {
-            let op = if pos > 0 && s.as_bytes()[pos - 1] == b'/' {
-                BinOp::Neq
-            } else {
-                BinOp::Eq
-            };
-            let left_str = if op == BinOp::Neq { &s[..pos - 1] } else { &s[..pos] };
-            let left = Self::parse_expr(left_str)?;
-            let right = Self::parse_expr(&s[pos + 1..])?;
-            return Ok(Expr::Binary(Box::new(left), op, Box::new(right)));
+        for (operator, bin_op, width) in [
+            ("or", BinOp::Or, 2),
+            ("and", BinOp::And, 3),
+            ("/=", BinOp::Neq, 2),
+            ("==", BinOp::Eq, 2),
+            (">=", BinOp::Gte, 2),
+            ("<=", BinOp::Lte, 2),
+            (">", BinOp::Gt, 1),
+            ("<", BinOp::Lt, 1),
+            ("=", BinOp::Eq, 1),
+        ] {
+            if let Some(pos) = find_top_level_op(s, operator) {
+                let left_str = &s[..pos];
+                let right_str = &s[pos + width..];
+                let left = Self::parse_expr(left_str)?;
+                let right = Self::parse_expr(right_str)?;
+                return Ok(Expr::Binary(Box::new(left), bin_op, Box::new(right)));
+            }
         }
 
-        if s == "true" {
+        let literal = s.trim_end_matches(['u', 'U', 'f', 'F']);
+        if literal == "true" {
             Ok(Expr::Lit(AgreeVal::Bool(true)))
-        } else if s == "false" {
+        } else if literal == "false" {
             Ok(Expr::Lit(AgreeVal::Bool(false)))
-        } else if let Ok(i) = s.parse::<i64>() {
+        } else if let Ok(i) = literal.parse::<i64>() {
             Ok(Expr::Lit(AgreeVal::Int(i)))
-        } else if let Ok(f) = s.parse::<f32>() {
+        } else if let Ok(f) = literal.parse::<f32>() {
             Ok(Expr::Lit(AgreeVal::Float(f)))
         } else {
             Ok(Expr::Var(s.to_string()))
@@ -242,18 +306,59 @@ impl AgreeAnnex {
                 match op {
                     BinOp::Eq => Ok(AgreeVal::Bool(l_val == r_val)),
                     BinOp::Neq => Ok(AgreeVal::Bool(l_val != r_val)),
+                    BinOp::Gt | BinOp::Gte | BinOp::Lt | BinOp::Lte => {
+                        let (left, right) = numeric_values(l_val, r_val)?;
+                        let result = match op {
+                            BinOp::Gt => left > right,
+                            BinOp::Gte => left >= right,
+                            BinOp::Lt => left < right,
+                            BinOp::Lte => left <= right,
+                            _ => unreachable!(),
+                        };
+                        Ok(AgreeVal::Bool(result))
+                    }
+                    BinOp::And | BinOp::Or => {
+                        let left = match l_val {
+                            AgreeVal::Bool(value) => value,
+                            _ => {
+                                return Err(AgreeError::EvalError(
+                                    "Logical operator requires bool lhs".into(),
+                                ))
+                            }
+                        };
+                        let right = match r_val {
+                            AgreeVal::Bool(value) => value,
+                            _ => {
+                                return Err(AgreeError::EvalError(
+                                    "Logical operator requires bool rhs".into(),
+                                ))
+                            }
+                        };
+                        Ok(AgreeVal::Bool(if *op == BinOp::And {
+                            left && right
+                        } else {
+                            left || right
+                        }))
+                    }
                     BinOp::Implies => {
                         let l_bool = match l_val {
                             AgreeVal::Bool(b) => b,
-                            _ => return Err(AgreeError::EvalError("Implies requires bool lhs".into())),
+                            _ => {
+                                return Err(AgreeError::EvalError(
+                                    "Implies requires bool lhs".into(),
+                                ))
+                            }
                         };
-                        if !l_bool {
-                            Ok(AgreeVal::Bool(true))
-                        } else {
-                            Ok(r_val)
-                        }
+                        let r_bool = match r_val {
+                            AgreeVal::Bool(value) => value,
+                            _ => {
+                                return Err(AgreeError::EvalError(
+                                    "Implies requires bool rhs".into(),
+                                ))
+                            }
+                        };
+                        Ok(AgreeVal::Bool(!l_bool || r_bool))
                     }
-                    _ => Err(AgreeError::EvalError("Operator not implemented".into())),
                 }
             }
         }

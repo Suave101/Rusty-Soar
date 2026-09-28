@@ -1,6 +1,6 @@
-use alloc::vec::Vec;
 use crate::symbol::SymbolId;
 use crate::wm::WmeKey;
+use alloc::vec::Vec;
 
 /// Symbol field selector inside a Working Memory Element (WME) triple (Id ^Attr Val).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,9 +49,21 @@ pub struct AlphaTest {
 impl AlphaTest {
     /// Tests whether a WME triple matches the alpha filter criteria.
     pub fn matches(&self, s: SymbolId, a: SymbolId, v: SymbolId) -> bool {
-        if let Some(id) = self.id { if id != s { return false; } }
-        if let Some(attr) = self.attr { if attr != a { return false; } }
-        if let Some(val) = self.val { if val != v { return false; } }
+        if let Some(id) = self.id {
+            if id != s {
+                return false;
+            }
+        }
+        if let Some(attr) = self.attr {
+            if attr != a {
+                return false;
+            }
+        }
+        if let Some(val) = self.val {
+            if val != v {
+                return false;
+            }
+        }
         true
     }
 }
@@ -213,7 +225,10 @@ impl ReteNetwork {
 
     /// Ingests a new WME into the RETE network.
     pub fn add_wme(&mut self, key: WmeKey, s: SymbolId, a: SymbolId, v: SymbolId) {
-        let record = WmeRecord { key, triple: (s, a, v) };
+        let record = WmeRecord {
+            key,
+            triple: (s, a, v),
+        };
 
         for alpha_idx in 0..self.alpha_memories.len() {
             if self.alpha_memories[alpha_idx].test.matches(s, a, v) {
@@ -235,7 +250,8 @@ impl ReteNetwork {
         for beta in &mut self.beta_memories {
             beta.tokens.retain(|t| !t.wmes.iter().any(|w| w.key == key));
         }
-        self.activations.retain(|inst| !inst.matched_wmes.iter().any(|w| w.key == key));
+        self.activations
+            .retain(|inst| !inst.matched_wmes.iter().any(|w| w.key == key));
     }
 
     fn get_or_create_alpha_memory(&mut self, test: AlphaTest) -> AlphaMemoryId {
@@ -260,7 +276,9 @@ impl ReteNetwork {
 
         match join.parent_beta {
             None => {
-                let token = Token { wmes: alloc::vec![wme.clone()] };
+                let token = Token {
+                    wmes: alloc::vec![wme.clone()],
+                };
                 self.propagate_token(&join, token);
             }
             Some(parent_beta_id) => {

@@ -41,5 +41,8 @@ fn main() {
         .expect("Failed to write default Soar rules to OUT_DIR");
 
     println!("cargo:rerun-if-changed={}", default_rules_path.display());
-    println!("cargo:rustc-env=SOAR_RULES_FILE={}", default_rules_path.display());
+    println!(
+        "cargo:rustc-env=SOAR_RULES_FILE={}",
+        default_rules_path.display()
+    );
 }

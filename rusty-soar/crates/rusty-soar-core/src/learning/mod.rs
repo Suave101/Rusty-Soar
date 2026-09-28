@@ -1,8 +1,8 @@
 //! Explanation-Based Learning (Chunking) for automatic rule synthesis.
 
-use alloc::vec::Vec;
 use crate::agent::Action;
 use crate::rete::{AlphaTest, VariableBinding};
+use alloc::vec::Vec;
 
 /// A dynamically synthesized production rule (Chunk) compiled from an impasse resolution.
 #[derive(Debug, Clone)]

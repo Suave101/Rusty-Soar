@@ -29,10 +29,20 @@ fn main() {
     let retrieved_lti = agent.retrieve_smem_to_wm(attr_name, val_rover, s1);
 
     assert_eq!(retrieved_lti, Some(lti1));
-    println!("SMem Query successful! Retrieved LTI: {:?}", retrieved_lti.unwrap());
+    println!(
+        "SMem Query successful! Retrieved LTI: {:?}",
+        retrieved_lti.unwrap()
+    );
 
-    println!("Working Memory element count post-retrieval: {}", agent.wm.len());
-    assert_eq!(agent.wm.len(), 3, "Retrieved facts must be placed in Working Memory");
+    println!(
+        "Working Memory element count post-retrieval: {}",
+        agent.wm.len()
+    );
+    assert_eq!(
+        agent.wm.len(),
+        3,
+        "Retrieved facts must be placed in Working Memory"
+    );
 
     println!("\nSemantic Memory Query & Retrieval: VERIFIED SUCCESS!");
 }

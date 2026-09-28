@@ -1,6 +1,6 @@
-use alloc::vec::Vec;
 use crate::agent::Action;
 use crate::rete::{AlphaTest, VariableBinding};
+use alloc::vec::Vec;
 
 /// Representation of a Soar production rule containing conditions and actions.
 #[derive(Debug, Clone)]

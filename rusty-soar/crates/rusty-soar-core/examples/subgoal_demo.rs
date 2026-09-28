@@ -75,6 +75,9 @@ fn main() {
         other => panic!("Expected TieImpasse, got: {:?}", other),
     }
 
-    println!("\nWM Total Elements (including substate WMEs): {}", agent.wm.len());
+    println!(
+        "\nWM Total Elements (including substate WMEs): {}",
+        agent.wm.len()
+    );
     println!("Subgoaling and Impasse Engine: VERIFIED SUCCESS!");
 }

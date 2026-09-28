@@ -1,8 +1,8 @@
 //! Truth Maintenance System (TMS) dependency tracking for automated I-support retractions.
 
+use crate::wm::WmeKey;
 use alloc::vec;
 use alloc::vec::Vec;
-use crate::wm::WmeKey;
 
 /// Represents a rule instantiation justification that supports one or more I-supported WMEs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,7 +54,11 @@ impl TruthMaintenanceSystem {
                 if self.justifications[i].supporting_wmes.contains(&wme_key) {
                     let just = self.justifications.remove(i);
                     for &derived in &just.derived_wmes {
-                        if !wmes_to_retract.contains(&derived) {
+                        let still_supported = self
+                            .justifications
+                            .iter()
+                            .any(|remaining| remaining.derived_wmes.contains(&derived));
+                        if !still_supported && !wmes_to_retract.contains(&derived) {
                             wmes_to_retract.push(derived);
                             queue.push(derived);
                         }

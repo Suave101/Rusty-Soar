@@ -1,7 +1,7 @@
 //! Working Memory Arena for element storage and support management.
 
-use alloc::vec::Vec;
 use crate::symbol::SymbolId;
+use alloc::vec::Vec;
 
 /// Support classification for Working Memory assertions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,5 +109,10 @@ impl WmeArena {
     /// Returns `true` if the arena contains no active WMEs.
     pub fn is_empty(&self) -> bool {
         self.count == 0
+    }
+
+    /// Iterates over active WMEs in deterministic insertion order.
+    pub fn iter(&self) -> impl Iterator<Item = &Wme> {
+        self.storage.iter().filter_map(|wme| wme.as_ref())
     }
 }

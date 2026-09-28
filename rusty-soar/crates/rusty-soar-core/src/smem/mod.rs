@@ -1,7 +1,7 @@
 //! Semantic Memory (SMem) long-term declarative store for `rusty-soar`.
 
-use alloc::vec::Vec;
 use crate::symbol::SymbolId;
+use alloc::vec::Vec;
 
 /// Long-Term Identifier (LTI) key referencing a declarative concept in SMem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

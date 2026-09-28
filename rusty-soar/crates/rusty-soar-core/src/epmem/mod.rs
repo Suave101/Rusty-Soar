@@ -1,8 +1,8 @@
 //! Episodic Memory (EpMem) temporal autobiographical memory store for `rusty-soar`.
 
-use alloc::vec::Vec;
 use crate::symbol::SymbolId;
 use crate::wm::WmeArena;
+use alloc::vec::Vec;
 
 /// Identifier handle for a discrete temporal episode in EpMem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -28,7 +28,9 @@ pub struct EpisodicMemory {
 impl EpisodicMemory {
     /// Creates a new empty `EpisodicMemory` store.
     pub fn new() -> Self {
-        Self { episodes: Vec::new() }
+        Self {
+            episodes: Vec::new(),
+        }
     }
 
     /// Records a new temporal episode snapshot from the current Working Memory state.
@@ -37,10 +39,8 @@ impl EpisodicMemory {
         let mut active_wmes = Vec::new();
 
         // Capture all active WME triples
-        for key_idx in 0..wm.len() {
-            if let Some(wme) = wm.get(crate::wm::WmeKey(key_idx)) {
-                active_wmes.push((wme.id, wme.attr, wme.val));
-            }
+        for wme in wm.iter() {
+            active_wmes.push((wme.id, wme.attr, wme.val));
         }
 
         self.episodes.push(Episode {

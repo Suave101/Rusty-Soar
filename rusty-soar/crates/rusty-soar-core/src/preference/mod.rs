@@ -1,8 +1,8 @@
 //! Architectural preference evaluation and decision procedure.
 
-use alloc::vec::Vec;
 use crate::rl::ReinforcementLearning;
 use crate::symbol::SymbolId;
+use alloc::vec::Vec;
 
 /// Categorical semantics for operator preferences asserted into Working Memory.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,10 +53,8 @@ pub fn resolve_preferences_with_rl(
     preferences: &[Preference],
     rl: &ReinforcementLearning,
 ) -> DecisionResult {
-    let state_prefs: Vec<&Preference> = preferences
-        .iter()
-        .filter(|p| p.state == state_id)
-        .collect();
+    let state_prefs: Vec<&Preference> =
+        preferences.iter().filter(|p| p.state == state_id).collect();
 
     // 1. Extract explicitly rejected operators
     let rejected: Vec<SymbolId> = state_prefs
@@ -77,6 +75,31 @@ pub fn resolve_preferences_with_rl(
 
     if candidates.is_empty() {
         return DecisionResult::NoChangeImpasse;
+    }
+
+    if candidates.len() == 1 {
+        return DecisionResult::Selected(candidates[0]);
+    }
+
+    let explicitly_dominated: Vec<SymbolId> = state_prefs
+        .iter()
+        .filter_map(|pref| match pref.preference_type {
+            PreferenceType::Better(other) if candidates.contains(&other) => Some(other),
+            PreferenceType::Worse(other) if candidates.contains(&other) => Some(pref.operator),
+            _ => None,
+        })
+        .collect();
+
+    candidates.retain(|op| !explicitly_dominated.contains(op));
+
+    if candidates.is_empty() {
+        return DecisionResult::ConflictImpasse(
+            state_prefs
+                .iter()
+                .filter(|p| p.preference_type == PreferenceType::Acceptable)
+                .map(|p| p.operator)
+                .collect(),
+        );
     }
 
     if candidates.len() == 1 {

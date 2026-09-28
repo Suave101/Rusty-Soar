@@ -79,7 +79,10 @@ fn main() {
     assert!(matches!(d1, DecisionResult::TieImpasse(_)));
     assert_eq!(agent.substates.len(), 1);
     let initial_wm_count = agent.wm.len();
-    println!("Cycle 1: Tie Impasse created substate. Total WMEs: {}", initial_wm_count);
+    println!(
+        "Cycle 1: Tie Impasse created substate. Total WMEs: {}",
+        initial_wm_count
+    );
 
     // Cycle 2: Substate resolves impasse -> S1 selects O1 -> Substate S2 is popped & cleaned up!
     let d2 = agent.run_decision_cycle(s1);
@@ -93,7 +96,11 @@ fn main() {
     }
 
     println!("\nActive Substates Remaining: {}", agent.substates.len());
-    assert_eq!(agent.substates.len(), 0, "Substate record list must be empty");
+    assert_eq!(
+        agent.substates.len(),
+        0,
+        "Substate record list must be empty"
+    );
 
     let final_wm_count = agent.wm.len();
     println!("Working Memory WME count post-cleanup: {}", final_wm_count);

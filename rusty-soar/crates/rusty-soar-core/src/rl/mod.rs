@@ -1,7 +1,7 @@
 //! Reinforcement Learning (RL) Q-value tuning module for `rusty-soar`.
 
-use alloc::vec::Vec;
 use crate::symbol::SymbolId;
+use alloc::vec::Vec;
 
 /// Represents a Q-value entry mapping a (state, operator) pair to a learned numeric preference.
 #[derive(Debug, Clone, PartialEq)]

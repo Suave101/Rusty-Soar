@@ -59,7 +59,10 @@ fn main() {
     // Provide environmental reward to O1_left
     agent.rl.add_reward(10.0);
     agent.rl.update_q_value(s1, o1_left, 0.0);
-    println!("\nLearned Q(S1, O1_left) = {:.2}", agent.rl.get_q_value(s1, o1_left));
+    println!(
+        "\nLearned Q(S1, O1_left) = {:.2}",
+        agent.rl.get_q_value(s1, o1_left)
+    );
 
     // Cycle 2: Higher Q-value breaks the tie automatically in favor of O1_left!
     let decision2 = agent.run_decision_cycle(s1);

@@ -31,7 +31,7 @@ fn main() {
                 val: Some(val_active),
             },
             vec![VariableBinding {
-                token_wme_index: 0,  // Match against Condition 0
+                token_wme_index: 0, // Match against Condition 0
                 token_field: Field::Id,
                 wme_field: Field::Id, // Cond 1 ID must equal Cond 0 ID
             }],

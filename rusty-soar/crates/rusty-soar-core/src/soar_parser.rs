@@ -75,9 +75,11 @@ impl SoarScript {
     /// Parses raw `.soar` script source text into a `SoarScript` AST.
     pub fn parse(script_content: &str) -> Result<Self, SoarParseError> {
         let mut productions = Vec::new();
+        let mut saw_rule_header = false;
 
         // 1. Strip UTF-8 BOM if present
-        let content = script_content.trim_start_matches('\u{feff}');
+        let expanded_content = Self::expand_generated_rules(script_content)?;
+        let content = expanded_content.trim_start_matches('\u{feff}');
 
         // 2. Strip inline comments ('#' or '//' to end of line)
         let mut clean_lines = Vec::new();
@@ -115,6 +117,7 @@ impl SoarScript {
                     || chars[i + 2] == '"';
 
                 if valid_before && valid_after {
+                    saw_rule_header = true;
                     let mut j = i + 2;
                     let mut header_text = String::new();
                     let mut brace_found = false;
@@ -128,43 +131,164 @@ impl SoarScript {
                         j += 1;
                     }
 
-                    if brace_found {
-                        let body_start = j + 1;
-                        let mut depth = 1;
-                        let mut k = body_start;
-
-                        while k < len && depth > 0 {
-                            if chars[k] == '{' {
-                                depth += 1;
-                            } else if chars[k] == '}' {
-                                depth -= 1;
-                            }
-                            if depth == 0 {
-                                break;
-                            }
-                            k += 1;
-                        }
-
-                        if depth == 0 {
-                            let rule_body: String = chars[body_start..k].iter().collect();
-                            let rule_name_override = header_text.trim();
-
-                            if let Ok(production) =
-                                Self::parse_production_body(&rule_body, rule_name_override)
-                            {
-                                productions.push(production);
-                            }
-
-                            i = k + 1;
-                            continue;
-                        }
+                    if !brace_found {
+                        return Err(SoarParseError::InvalidSyntax(
+                            "Rule header missing opening '{'".to_string(),
+                        ));
                     }
+
+                    let body_start = j + 1;
+                    let mut depth = 1;
+                    let mut k = body_start;
+
+                    while k < len && depth > 0 {
+                        if chars[k] == '{' {
+                            depth += 1;
+                        } else if chars[k] == '}' {
+                            depth -= 1;
+                        }
+                        if depth == 0 {
+                            break;
+                        }
+                        k += 1;
+                    }
+
+                    if depth != 0 {
+                        return Err(SoarParseError::InvalidSyntax(
+                            "Rule body missing closing '}'".to_string(),
+                        ));
+                    }
+
+                    let rule_body: String = chars[body_start..k].iter().collect();
+                    let rule_name_override = header_text.trim();
+                    productions.push(Self::parse_production_body(&rule_body, rule_name_override)?);
+
+                    i = k + 1;
+                    continue;
                 }
             }
             i += 1;
         }
 
+        if saw_rule_header && productions.is_empty() {
+            return Err(SoarParseError::InvalidSyntax(
+                "No valid productions found".to_string(),
+            ));
+        }
+
         Ok(SoarScript { productions })
+    }
+
+    fn expand_generated_rules(script_content: &str) -> Result<String, SoarParseError> {
+        let mut content = script_content.to_string();
+        let mut search_from = 0;
+
+        while let Some(proc_offset) = content[search_from..].find("proc ") {
+            let proc_start = search_from + proc_offset;
+            let header_start = proc_start + "proc ".len();
+            let args_start = content[header_start..]
+                .find('{')
+                .map(|offset| header_start + offset)
+                .ok_or_else(|| {
+                    SoarParseError::InvalidSyntax("Procedure missing arguments".into())
+                })?;
+            let args_end = Self::matching_brace(&content, args_start)?;
+            let body_start = content[args_end + 1..]
+                .find('{')
+                .map(|offset| args_end + 1 + offset)
+                .ok_or_else(|| SoarParseError::InvalidSyntax("Procedure missing body".into()))?;
+            let body_end = Self::matching_brace(&content, body_start)?;
+
+            let name = content[header_start..args_start].trim().to_string();
+            let parameter = content[args_start + 1..args_end].trim().to_string();
+            let body = content[body_start + 1..body_end].to_string();
+            let (loop_body, loop_variable) = if let Some(foreach_offset) = body.find("foreach ") {
+                let foreach_start = foreach_offset + "foreach ".len();
+                let loop_args_end = body[foreach_start..]
+                    .find('{')
+                    .map(|offset| foreach_start + offset)
+                    .ok_or_else(|| SoarParseError::InvalidSyntax("foreach missing body".into()))?;
+                let loop_body_end = Self::matching_brace(&body, loop_args_end)?;
+                let loop_variable = body[foreach_start..loop_args_end]
+                    .split_whitespace()
+                    .next()
+                    .ok_or_else(|| {
+                        SoarParseError::InvalidSyntax("foreach missing variable".into())
+                    })?
+                    .to_string();
+                (
+                    body[loop_args_end + 1..loop_body_end].to_string(),
+                    loop_variable,
+                )
+            } else {
+                (body.clone(), parameter.clone())
+            };
+
+            content.replace_range(proc_start..=body_end, "");
+            let invocation = format!("{} {{", name);
+            let mut invocation_search = 0;
+            while let Some(invocation_offset) = content[invocation_search..].find(&invocation) {
+                let invocation_start = invocation_search + invocation_offset;
+                let list_start = invocation_start + name.len() + 1;
+                let list_end = Self::matching_brace(&content, list_start)?;
+                let values = content[list_start + 1..list_end]
+                    .split_whitespace()
+                    .collect::<Vec<&str>>();
+                let mut replacement = String::new();
+                for value in values {
+                    let generated = loop_body
+                        .replace(&format!("${{{}}}", loop_variable), value)
+                        .replace(&format!("${}", loop_variable), value);
+                    replacement.push_str(&generated);
+                    replacement.push('\n');
+                }
+                content.replace_range(invocation_start..=list_end, &replacement);
+                invocation_search = invocation_start + replacement.len();
+            }
+
+            search_from = proc_start;
+        }
+
+        let mut normalized = String::new();
+        let chars: Vec<char> = content.chars().collect();
+        let mut index = 0;
+        while index < chars.len() {
+            if index + 3 < chars.len() && chars[index..].starts_with(&['s', 'p', ' ', '"']) {
+                normalized.push_str("sp {");
+                index += 4;
+                while index < chars.len() && chars[index] != '"' {
+                    normalized.push(chars[index]);
+                    index += 1;
+                }
+                normalized.push('}');
+                if index < chars.len() {
+                    index += 1;
+                }
+            } else {
+                normalized.push(chars[index]);
+                index += 1;
+            }
+        }
+
+        Ok(normalized)
+    }
+
+    fn matching_brace(content: &str, open: usize) -> Result<usize, SoarParseError> {
+        let bytes = content.as_bytes();
+        let mut depth = 0;
+        for (index, byte) in bytes.iter().enumerate().skip(open) {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Ok(index);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Err(SoarParseError::InvalidSyntax("Unclosed brace".into()))
     }
 
     fn parse_production_body(
@@ -195,10 +319,7 @@ impl SoarScript {
                 .to_string()
         };
 
-        let name = name
-            .trim_matches('"')
-            .trim_matches('\'')
-            .to_string();
+        let name = name.trim_matches('"').trim_matches('\'').to_string();
 
         let mut conditions = Vec::new();
 
@@ -212,11 +333,16 @@ impl SoarScript {
                     let raw_attr = tokens[0];
                     let attr = raw_attr.rsplit('.').next().unwrap_or(raw_attr).to_string();
                     let val_str = tokens[1].trim_end_matches(')').trim_start_matches('=');
-                    let val = match val_str.parse::<i64>() {
-                        Ok(i) => SoarValue::Int(i),
-                        Err(_) => match val_str.parse::<f32>() {
-                            Ok(f) => SoarValue::Float(f),
-                            Err(_) => SoarValue::Symbol(val_str.to_string()),
+                    let val_str = val_str.trim_end_matches(['u', 'U']);
+                    let val = match val_str {
+                        "true" => SoarValue::Bool(true),
+                        "false" => SoarValue::Bool(false),
+                        _ => match val_str.parse::<i64>() {
+                            Ok(i) => SoarValue::Int(i),
+                            Err(_) => match val_str.parse::<f32>() {
+                                Ok(f) => SoarValue::Float(f),
+                                Err(_) => SoarValue::Symbol(val_str.to_string()),
+                            },
                         },
                     };
                     conditions.push(SoarCondition {
@@ -251,7 +377,16 @@ impl SoarScript {
                 };
                 if let Some(val) = line.split(key).nth(1) {
                     if let Some(token) = val.split_whitespace().next() {
-                        op_id = token.trim_end_matches(')').parse().unwrap_or(0);
+                        op_id = token
+                            .trim_end_matches(')')
+                            .trim_end_matches(['u', 'U'])
+                            .parse()
+                            .map_err(|_| {
+                                SoarParseError::InvalidSyntax(format!(
+                                    "Invalid operator ID: {}",
+                                    token
+                                ))
+                            })?;
                     }
                 }
             }
@@ -268,7 +403,16 @@ impl SoarScript {
                 };
                 if let Some(val) = line.split(key).nth(1) {
                     if let Some(token) = val.split_whitespace().next() {
-                        target_alt = token.trim_end_matches(')').parse().unwrap_or(0.0);
+                        target_alt = token
+                            .trim_end_matches(')')
+                            .trim_end_matches(['f', 'F'])
+                            .parse()
+                            .map_err(|_| {
+                                SoarParseError::InvalidSyntax(format!(
+                                    "Invalid target altitude: {}",
+                                    token
+                                ))
+                            })?;
                     }
                 }
             }

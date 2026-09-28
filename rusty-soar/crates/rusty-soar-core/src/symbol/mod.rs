@@ -38,10 +38,15 @@ impl SymbolTable {
 
     /// Interns a string symbol into a lightweight `SymbolId` using deterministic linear lookup.
     pub fn intern_str(&mut self, s: &str) -> SymbolId {
-        if let Some((idx, _)) = self.symbols.iter().enumerate().find(|(_, data)| match data {
-            SymbolData::String(existing) => existing == s,
-            _ => false,
-        }) {
+        if let Some((idx, _)) = self
+            .symbols
+            .iter()
+            .enumerate()
+            .find(|(_, data)| match data {
+                SymbolData::String(existing) => existing == s,
+                _ => false,
+            })
+        {
             return SymbolId(idx as u32);
         }
 
@@ -52,10 +57,18 @@ impl SymbolTable {
 
     /// Interns a state identifier (e.g., 'S', 1 for S1).
     pub fn intern_id(&mut self, prefix: char, number: u64) -> SymbolId {
-        if let Some((idx, _)) = self.symbols.iter().enumerate().find(|(_, data)| match data {
-            SymbolData::Identifier { prefix: p, number: n } => *p == prefix && *n == number,
-            _ => false,
-        }) {
+        if let Some((idx, _)) = self
+            .symbols
+            .iter()
+            .enumerate()
+            .find(|(_, data)| match data {
+                SymbolData::Identifier {
+                    prefix: p,
+                    number: n,
+                } => *p == prefix && *n == number,
+                _ => false,
+            })
+        {
             return SymbolId(idx as u32);
         }
 

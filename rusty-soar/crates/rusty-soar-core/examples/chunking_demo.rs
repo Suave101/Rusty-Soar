@@ -97,7 +97,10 @@ fn main() {
     }
 
     println!("\nChunks Learned Count: {}", agent.chunks_learned);
-    assert_eq!(agent.chunks_learned, 1, "Agent should have synthesized exactly 1 Chunk");
+    assert_eq!(
+        agent.chunks_learned, 1,
+        "Agent should have synthesized exactly 1 Chunk"
+    );
 
     println!("\nExplanation-Based Learning (Chunking): VERIFIED SUCCESS!");
 }

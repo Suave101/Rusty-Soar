@@ -1,11 +1,13 @@
 use std::env;
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
 
 use rusty_soar_core::aadl_bridge::{
     AgreeAnnex, AgreeVal, FlightTelemetryFFI, SoarCommandFFI, SymbolEnvironment,
 };
-use rusty_soar_core::soar_parser::{SoarScript, SoarValue};
+use rusty_soar_core::soar_condition_matches;
+use rusty_soar_core::soar_parser::SoarScript;
 
 /// Recognized compilation target triples
 const KNOWN_TARGETS: &[(&str, &str)] = &[
@@ -16,7 +18,10 @@ const KNOWN_TARGETS: &[(&str, &str)] = &[
     ("thumbv8m.main-none-eabi", "ARM Cortex-M33 Bare-Metal"),
     ("aarch64-unknown-nto-qnx710", "QNX Neutrino 7.1 RTOS"),
     ("riscv64gc-unknown-none-elf", "64-bit RISC-V Bare-Metal"),
-    ("riscv32imac-unknown-none-elf", "32-bit RISC-V Microcontroller"),
+    (
+        "riscv32imac-unknown-none-elf",
+        "32-bit RISC-V Microcontroller",
+    ),
     ("powerpc-unknown-none", "PowerPC Bare-Metal"),
     ("aarch64-unknown-linux-musl", "ARM64 Static Linux"),
     ("x86_64-unknown-linux-gnu", "x86_64 Linux Native"),
@@ -29,13 +34,19 @@ struct CliSymbolEnv<'a> {
 
 impl<'a> SymbolEnvironment for CliSymbolEnv<'a> {
     fn lookup(&self, var_name: &str) -> Option<AgreeVal> {
-        match var_name {
+        let name = var_name.rsplit('.').next().unwrap_or(var_name);
+        match name {
             "sensor_valid" => Some(AgreeVal::Bool(self.telemetry.sensor_valid)),
             "engine_status" => Some(AgreeVal::Int(self.telemetry.engine_status as i64)),
+            "airspeed_kts" => Some(AgreeVal::Float(self.telemetry.airspeed_kts)),
             "altitude_ft" => Some(AgreeVal::Float(self.telemetry.altitude_ft)),
             "operator_id" => Some(AgreeVal::Int(self.command.operator_id as i64)),
             "target_altitude_ft" => Some(AgreeVal::Float(self.command.target_altitude_ft)),
             "is_valid" => Some(AgreeVal::Bool(self.command.is_valid)),
+            "OPERATOR_CRUISE_ID" => Some(AgreeVal::Int(10)),
+            "OPERATOR_EMERGENCY_LAND_ID" => Some(AgreeVal::Int(99)),
+            "ENGINE_STATUS_NORMAL" => Some(AgreeVal::Int(0)),
+            "ENGINE_STATUS_CRITICAL" => Some(AgreeVal::Int(2)),
             _ => None,
         }
     }
@@ -60,8 +71,8 @@ fn get_host_target() -> String {
     if let Some(out) = output {
         let stdout = String::from_utf8_lossy(&out.stdout);
         for line in stdout.lines() {
-            if line.starts_with("host: ") {
-                return line["host: ".len()..].trim().to_string();
+            if let Some(host) = line.strip_prefix("host: ") {
+                return host.trim().to_string();
             }
         }
     }
@@ -69,7 +80,10 @@ fn get_host_target() -> String {
 }
 
 fn ensure_target_installed(target: &str) {
-    println!("      Checking target sysroot availability for '{}'...", target);
+    println!(
+        "      Checking target sysroot availability for '{}'...",
+        target
+    );
     let status = Command::new("rustup")
         .arg("target")
         .arg("add")
@@ -81,9 +95,62 @@ fn ensure_target_installed(target: &str) {
             println!("      Target sysroot '{}' is ready.", target);
         }
         _ => {
-            println!("      [Notice] rustup auto-install skipped or target requires custom build-std.");
+            println!(
+                "      [Notice] rustup auto-install skipped or target requires custom build-std."
+            );
         }
     }
+}
+
+fn load_soar_file(path: &Path, stack: &mut Vec<PathBuf>) -> Result<String, String> {
+    let canonical = fs::canonicalize(path).map_err(|error| {
+        format!(
+            "Failed to resolve Soar source {}: {}",
+            path.display(),
+            error
+        )
+    })?;
+    if stack.contains(&canonical) {
+        return Err(format!(
+            "Cyclic Soar source detected at {}",
+            canonical.display()
+        ));
+    }
+
+    stack.push(canonical.clone());
+    let source = fs::read_to_string(&canonical).map_err(|error| {
+        format!(
+            "Failed to read Soar source {}: {}",
+            canonical.display(),
+            error
+        )
+    })?;
+    let parent = canonical.parent().ok_or_else(|| {
+        format!(
+            "Soar source has no parent directory: {}",
+            canonical.display()
+        )
+    })?;
+    let mut expanded = String::new();
+
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if let Some(source_name) = trimmed
+            .strip_prefix("source")
+            .and_then(|value| value.trim().strip_prefix('"'))
+            .and_then(|value| value.strip_suffix('"'))
+        {
+            let source_path = parent.join(source_name);
+            expanded.push_str(&load_soar_file(&source_path, stack)?);
+            expanded.push('\n');
+        } else {
+            expanded.push_str(line);
+            expanded.push('\n');
+        }
+    }
+
+    stack.pop();
+    Ok(expanded)
 }
 
 fn main() {
@@ -118,7 +185,7 @@ fn main() {
 
     // 1. Read & Parse Soar Script
     println!("\n[1/5] Reading Soar script from: {}", soar_path);
-    let soar_source = fs::read_to_string(soar_path).unwrap_or_else(|e| {
+    let soar_source = load_soar_file(Path::new(soar_path), &mut Vec::new()).unwrap_or_else(|e| {
         eprintln!("Error reading Soar file: {}", e);
         exit(1);
     });
@@ -139,7 +206,11 @@ fn main() {
     }
 
     for prod in &soar_script.productions {
-        println!("       - Rule: {} (Conditions: {})", prod.name, prod.conditions.len());
+        println!(
+            "       - Rule: {} (Conditions: {})",
+            prod.name,
+            prod.conditions.len()
+        );
     }
 
     // 2. Read & Parse AADL Contract Specification
@@ -162,18 +233,24 @@ fn main() {
     println!("\n[3/5] Verifying Soar agent against AADL AGREE contract...");
 
     let scenarios = vec![
-        ("Nominal Cruise", FlightTelemetryFFI {
-            airspeed_kts: 220.0,
-            altitude_ft: 10000.0,
-            engine_status: 0,
-            sensor_valid: true,
-        }),
-        ("Emergency Fault", FlightTelemetryFFI {
-            airspeed_kts: 180.0,
-            altitude_ft: 15000.0,
-            engine_status: 2,
-            sensor_valid: true,
-        }),
+        (
+            "Nominal Cruise",
+            FlightTelemetryFFI {
+                airspeed_kts: 220.0,
+                altitude_ft: 10000.0,
+                engine_status: 0,
+                sensor_valid: true,
+            },
+        ),
+        (
+            "Emergency Fault",
+            FlightTelemetryFFI {
+                airspeed_kts: 180.0,
+                altitude_ft: 15000.0,
+                engine_status: 2,
+                sensor_valid: true,
+            },
+        ),
     ];
 
     let mut total_passed = 0;
@@ -183,16 +260,10 @@ fn main() {
         let mut matched_target_alt = telemetry.altitude_ft;
 
         for prod in &soar_script.productions {
-            let mut matches = true;
-            for cond in &prod.conditions {
-                if cond.attribute == "engine_status" {
-                    if let SoarValue::Int(expected_status) = cond.value {
-                        if telemetry.engine_status as i64 != expected_status {
-                            matches = false;
-                        }
-                    }
-                }
-            }
+            let matches = prod
+                .conditions
+                .iter()
+                .all(|condition| soar_condition_matches(condition, telemetry));
 
             if matches && !prod.actions.is_empty() {
                 let action = &prod.actions[0];
@@ -225,6 +296,9 @@ fn main() {
             total_passed += 1;
         } else {
             println!("FAILED");
+            if let Err(e) = assume_res {
+                println!("        Assumption violation: {}", e);
+            }
             if let Err(e) = guarantee_res {
                 println!("        Violation: {}", e);
             }
@@ -236,7 +310,10 @@ fn main() {
         exit(1);
     }
 
-    println!("\n[4/5] Verification Passed! Compiling agent to target: {}", selected_target);
+    println!(
+        "\n[4/5] Verification Passed! Compiling agent to target: {}",
+        selected_target
+    );
 
     // Auto-install target sysroot if cross-compiling
     if selected_target != host_target {
@@ -250,8 +327,13 @@ fn main() {
     });
 
     let mut cargo_cmd = Command::new("cargo");
+    let canonical_soar_path = canonical_soar_path.to_str().unwrap_or_else(|| {
+        eprintln!("Soar rules path is not valid UTF-8: {}", soar_path);
+        exit(1);
+    });
+
     cargo_cmd
-        .env("SOAR_RULES_FILE", canonical_soar_path.to_str().unwrap())
+        .env("SOAR_RULES_FILE", canonical_soar_path)
         .arg("build")
         .arg("--package")
         .arg("rusty-soar-core")
@@ -269,7 +351,10 @@ fn main() {
     if !status.success() {
         eprintln!("\nCompilation failed for target '{}'.", selected_target);
         eprintln!("If this is a Tier 3 target, compile using Nightly build-std:");
-        eprintln!("      cargo +nightly build -Z build-std=core,alloc --target {}", selected_target);
+        eprintln!(
+            "      cargo +nightly build -Z build-std=core,alloc --target {}",
+            selected_target
+        );
         exit(1);
     }
 
@@ -278,9 +363,15 @@ fn main() {
     println!("      Verification : PASSED (2/2 scenarios satisfied AGREE contract)");
     println!("      Compilation  : SUCCESS");
     if selected_target != host_target {
-        println!("      Target Artifact: target/{}/release/librusty_soar_core.a", selected_target);
+        println!(
+            "      Target Artifact: target/{}/release/librusty_soar_core.a",
+            selected_target
+        );
     } else {
         println!("      Target Artifact: target/release/librusty_soar_core.a");
     }
-    println!("\nSUCCESS: Verified Soar agent built successfully for {}!", selected_target);
+    println!(
+        "\nSUCCESS: Verified Soar agent built successfully for {}!",
+        selected_target
+    );
 }
