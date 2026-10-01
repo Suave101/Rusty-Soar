@@ -343,8 +343,11 @@ fn test_parsed_soar_script_preserves_identifier_joins() {
     let state = agent.symbols.intern_id('S', 1);
     let child = agent.symbols.intern_id('C', 1);
     agent.install_soar_script(&script, state);
-    agent.insert_wme(state, agent.symbols.intern_str("child"), child);
-    agent.insert_wme(child, agent.symbols.intern_str("status"), agent.symbols.intern_str("ready"));
+    let child_attr = agent.symbols.intern_str("child");
+    agent.insert_wme(state, child_attr, child);
+    let status_attr = agent.symbols.intern_str("status");
+    let ready_val = agent.symbols.intern_str("ready");
+    agent.insert_wme(child, status_attr, ready_val);
 
     agent.run_elaboration_phase();
     assert_eq!(

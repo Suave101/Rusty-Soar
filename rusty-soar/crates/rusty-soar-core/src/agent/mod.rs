@@ -1,8 +1,10 @@
-use alloc::{boxed::Box, format, vec, vec::Vec};
+use alloc::{boxed::Box, format, string::{String, ToString}, vec, vec::Vec};
 use crate::epmem::{EpisodeId, EpisodicMemory};
 use crate::impasse::{ImpasseType, SubstateRecord};
 use crate::learning::ChunkBuilder;
-use crate::preference::{resolve_preferences_with_rl, DecisionResult, Preference};
+use crate::preference::{
+    resolve_preferences_with_rl, DecisionResult, Preference, PreferenceType,
+};
 use crate::rete::{AlphaTest, Field, ReteNetwork, VariableBinding};
 use crate::rl::ReinforcementLearning;
 use crate::soar_parser::{SoarPreference, SoarScript, SoarValue};

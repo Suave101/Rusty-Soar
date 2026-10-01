@@ -433,7 +433,7 @@ impl SoarScript {
 
         for line in rhs.lines() {
             let line = line.trim();
-            if line.starts_with("(<") && line.contains('^') {
+            if line.starts_with('(') && line.contains('^') && !line.contains("operator") {
                 let trimmed = line.trim_end_matches(')');
                 let Some((left, right)) = trimmed.split_once('^') else {
                     continue;
@@ -443,11 +443,8 @@ impl SoarScript {
                 };
                 let tokens: Vec<&str> = right.split_whitespace().collect();
                 if tokens.len() >= 2 && tokens[0] != "operator" {
-                    let mut value_token = tokens[1].trim_end_matches(',');
-                    let remove = value_token.ends_with('-');
-                    if remove {
-                        value_token = value_token.trim_end_matches('-');
-                    }
+                                        let remove = tokens.last().map_or(false, |t| t.starts_with('-'));
+                    let value_token = tokens[1].trim_end_matches(|c| c == ')' || c == ',');
                     let value = if value_token.starts_with('<') {
                         SoarValue::Symbol(value_token.to_string())
                     } else if value_token == "true" {
@@ -478,8 +475,8 @@ impl SoarScript {
             }
             if let Some(operator) = line.split("^operator").nth(1) {
                 let tokens: Vec<&str> = operator.split_whitespace().collect();
-                if let Some(marker) = tokens.get(1).map(|token| token.trim_matches(',')) {
-                    preference = match *marker {
+                if let Some(marker) = tokens.get(1).map(|token| token.trim_end_matches(|c| c == ')' || c == ',')) {
+                    preference = match marker {
                         "+" => SoarPreference::Acceptable,
                         "-" => SoarPreference::Reject,
                         "!" => SoarPreference::Require,
