@@ -13,6 +13,23 @@ pub enum Field {
     Val,
 }
 
+/// Relational predicate for a constant value test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Relation {
+    /// Exact equality.
+    Equal,
+    /// Inequality.
+    NotEqual,
+    /// Numeric less-than comparison.
+    Less,
+    /// Numeric less-than-or-equal comparison.
+    LessOrEqual,
+    /// Numeric greater-than comparison.
+    Greater,
+    /// Numeric greater-than-or-equal comparison.
+    GreaterOrEqual,
+}
+
 impl Field {
     /// Extracts the selected symbol handle from a WME triple.
     pub fn extract(&self, triple: &(SymbolId, SymbolId, SymbolId)) -> SymbolId {
@@ -49,6 +66,19 @@ pub struct AlphaTest {
 impl AlphaTest {
     /// Tests whether a WME triple matches the alpha filter criteria.
     pub fn matches(&self, s: SymbolId, a: SymbolId, v: SymbolId) -> bool {
+        self.matches_with_numeric(s, a, v, &[], Relation::Equal, &[])
+    }
+
+    /// Tests a WME using relation-aware numeric symbol metadata.
+    pub fn matches_with_numeric(
+        &self,
+        s: SymbolId,
+        a: SymbolId,
+        v: SymbolId,
+        numeric_values: &[(SymbolId, f64)],
+        relation: Relation,
+        alternatives: &[SymbolId],
+    ) -> bool {
         if let Some(id) = self.id {
             if id != s {
                 return false;
@@ -59,9 +89,43 @@ impl AlphaTest {
                 return false;
             }
         }
-        if let Some(val) = self.val {
-            if val != v {
-                return false;
+        if let Some(expected) = self.val {
+            if !alternatives.is_empty() && relation == Relation::Equal {
+                return alternatives.contains(&v);
+            }
+            match relation {
+                Relation::Equal if expected != v => return false,
+                Relation::NotEqual if expected == v => return false,
+                Relation::Less
+                | Relation::LessOrEqual
+                | Relation::Greater
+                | Relation::GreaterOrEqual => {
+                    let Some(expected) = numeric_values
+                        .iter()
+                        .find(|(symbol, _)| *symbol == expected)
+                        .map(|(_, value)| *value)
+                    else {
+                        return false;
+                    };
+                    let Some(actual) = numeric_values
+                        .iter()
+                        .find(|(symbol, _)| *symbol == v)
+                        .map(|(_, value)| *value)
+                    else {
+                        return false;
+                    };
+                    let matches = match relation {
+                        Relation::Less => actual < expected,
+                        Relation::LessOrEqual => actual <= expected,
+                        Relation::Greater => actual > expected,
+                        Relation::GreaterOrEqual => actual >= expected,
+                        Relation::Equal | Relation::NotEqual => unreachable!(),
+                    };
+                    if !matches {
+                        return false;
+                    }
+                }
+                _ => {}
             }
         }
         true
@@ -148,8 +212,14 @@ pub struct JoinNode {
 }
 
 /// Active rule instantiation generated when a full RETE match path is satisfied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InstantiationId(pub usize);
+
+/// Active rule instantiation generated when a full RETE match path is satisfied.
 #[derive(Debug, Clone)]
 pub struct Instantiation {
+    /// Stable identity for this rule/binding while it remains matched.
+    pub id: InstantiationId,
     /// Production rule identifier label.
     pub rule_name: &'static str,
     /// Complete collection of WME records satisfying the production.
@@ -169,12 +239,84 @@ pub struct ReteNetwork {
     pub productions: Vec<(&'static str, ProductionId)>,
     /// Active rule instantiations ready for execution.
     pub activations: Vec<Instantiation>,
+    /// Numeric values associated with interned symbols for relational tests.
+    pub numeric_values: Vec<(SymbolId, f64)>,
+    /// Relation metadata for alpha patterns, kept outside the public alpha test shape.
+    pub relations: Vec<((Option<SymbolId>, Option<SymbolId>, Option<SymbolId>), Relation)>,
+    /// Alternative value symbols for disjunctive alpha patterns.
+    pub alternatives: Vec<((Option<SymbolId>, Option<SymbolId>), Vec<SymbolId>)>,
+    /// Instantiations whose bindings currently remain matched.
+    pub active_instantiations: Vec<Instantiation>,
+    /// Monotonically increasing instantiation identity source.
+    next_instantiation_id: usize,
 }
 
 impl ReteNetwork {
     /// Creates a new, empty RETE match network.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Registers a deterministic numeric interpretation for a symbol.
+    pub fn register_numeric_value(&mut self, symbol: SymbolId, value: f64) {
+        if let Some((_, existing)) = self
+            .numeric_values
+            .iter_mut()
+            .find(|(existing, _)| *existing == symbol)
+        {
+            *existing = value;
+        } else {
+            self.numeric_values.push((symbol, value));
+        }
+    }
+
+    /// Registers a relation for an existing alpha pattern.
+    pub fn register_relation(&mut self, test: &AlphaTest, relation: Relation) {
+        let key = (test.id, test.attr, test.val);
+        if let Some((_, existing)) = self.relations.iter_mut().find(|(candidate, _)| *candidate == key)
+        {
+            *existing = relation;
+        } else {
+            self.relations.push((key, relation));
+        }
+    }
+
+    /// Registers alternative value symbols for an alpha pattern.
+    pub fn register_alternatives(&mut self, test: &AlphaTest, alternatives: Vec<SymbolId>) {
+        let key = (test.id, test.attr);
+        if let Some((_, existing)) = self.alternatives.iter_mut().find(|(candidate, _)| *candidate == key) {
+            *existing = alternatives;
+        } else {
+            self.alternatives.push((key, alternatives));
+        }
+    }
+
+    fn alternatives_for(&self, test: &AlphaTest) -> &[SymbolId] {
+        self.alternatives
+            .iter()
+            .find(|(candidate, _)| *candidate == (test.id, test.attr))
+            .map(|(_, alternatives)| alternatives.as_slice())
+            .unwrap_or(&[])
+    }
+
+    fn relation_for(&self, test: &AlphaTest) -> Relation {
+        self.relations
+            .iter()
+            .find(|(candidate, _)| *candidate == (test.id, test.attr, test.val))
+            .map(|(_, relation)| *relation)
+            .unwrap_or(Relation::Equal)
+    }
+
+    fn binding_is_active(&self, rule_name: &'static str, matched_wmes: &[WmeRecord]) -> bool {
+        self.active_instantiations.iter().any(|instantiation| {
+            instantiation.rule_name == rule_name
+                && instantiation.matched_wmes.len() == matched_wmes.len()
+                && instantiation
+                    .matched_wmes
+                    .iter()
+                    .zip(matched_wmes)
+                    .all(|(left, right)| left.key == right.key)
+        })
     }
 
     /// Adds a production rule to the RETE match graph.
@@ -231,7 +373,17 @@ impl ReteNetwork {
         };
 
         for alpha_idx in 0..self.alpha_memories.len() {
-            if self.alpha_memories[alpha_idx].test.matches(s, a, v) {
+            if self.alpha_memories[alpha_idx]
+                .test
+                .matches_with_numeric(
+                    s,
+                    a,
+                    v,
+                    &self.numeric_values,
+                    self.relation_for(&self.alpha_memories[alpha_idx].test),
+                    self.alternatives_for(&self.alpha_memories[alpha_idx].test),
+                )
+            {
                 self.alpha_memories[alpha_idx].wmes.push(record.clone());
 
                 let successors = self.alpha_memories[alpha_idx].successors.clone();
@@ -252,11 +404,16 @@ impl ReteNetwork {
         }
         self.activations
             .retain(|inst| !inst.matched_wmes.iter().any(|w| w.key == key));
+        self.active_instantiations
+            .retain(|inst| !inst.matched_wmes.iter().any(|w| w.key == key));
     }
 
     fn get_or_create_alpha_memory(&mut self, test: AlphaTest) -> AlphaMemoryId {
         if let Some(idx) = self.alpha_memories.iter().position(|a| {
-            a.test.id == test.id && a.test.attr == test.attr && a.test.val == test.val
+            a.test.id == test.id
+                && a.test.attr == test.attr
+                && a.test.val == test.val
+                && self.relation_for(&a.test) == self.relation_for(&test)
         }) {
             AlphaMemoryId(idx)
         } else {
@@ -305,10 +462,16 @@ impl ReteNetwork {
 
         if let Some(prod_id) = join.production {
             let rule_name = self.productions[prod_id.0].0;
-            self.activations.push(Instantiation {
-                rule_name,
-                matched_wmes: token.wmes,
-            });
+            if !self.binding_is_active(rule_name, &token.wmes) {
+                let instantiation = Instantiation {
+                    id: InstantiationId(self.next_instantiation_id),
+                    rule_name,
+                    matched_wmes: token.wmes,
+                };
+                self.next_instantiation_id += 1;
+                self.active_instantiations.push(instantiation.clone());
+                self.activations.push(instantiation);
+            }
         }
     }
 

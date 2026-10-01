@@ -95,6 +95,13 @@ impl WmeArena {
         self.storage.get(key.0)?.as_ref()
     }
 
+    /// Promotes an active WME to persistent operator support.
+    pub fn set_support(&mut self, key: WmeKey, support: SupportType) {
+        if let Some(Some(wme)) = self.storage.get_mut(key.0) {
+            wme.support = support;
+        }
+    }
+
     /// Finds an active WME by its identifier, attribute, and value triple.
     pub fn find(&self, id: SymbolId, attr: SymbolId, val: SymbolId) -> Option<WmeKey> {
         self.storage

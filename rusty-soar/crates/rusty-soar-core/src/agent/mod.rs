@@ -5,15 +5,19 @@ use crate::learning::ChunkBuilder;
 use crate::preference::{
     resolve_preferences_with_rl, DecisionResult, Preference, PreferenceType,
 };
-use crate::rete::{AlphaTest, Field, ReteNetwork, VariableBinding};
+use crate::rete::{
+    AlphaTest, Field, InstantiationId, Relation, ReteNetwork, VariableBinding,
+};
 use crate::rl::ReinforcementLearning;
-use crate::soar_parser::{SoarPreference, SoarScript, SoarValue};
+use crate::soar_parser::{
+    SoarCondition, SoarPreference, SoarRelation, SoarRhsFunction, SoarScript, SoarValue,
+};
 use crate::smem::{LtiId, SemanticMemory};
-use crate::symbol::{SymbolId, SymbolTable};
+use crate::symbol::{SymbolData, SymbolId, SymbolTable};
 use crate::tms::TruthMaintenanceSystem;
 use crate::wm::{SupportType, WmeArena, WmeKey};
 
-const MAX_ELABORATION_CYCLES: usize = 10;
+const MAX_ELABORATION_CYCLES: usize = 1024;
 
 /// Decision cycle execution phase for the Soar engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -43,10 +47,51 @@ pub enum Action {
         /// Value symbol.
         val: SymbolId,
     },
+    /// Asserts a WME whose identifier and value are resolved from the matched token.
+    AddWme {
+        /// Identifier expression.
+        id: WmeTerm,
+        /// Attribute symbol.
+        attr: SymbolId,
+        /// Value expression.
+        val: WmeTerm,
+    },
     /// Retracts an existing WME by key handle.
     Remove(WmeKey),
+    /// Retracts a WME whose identifier and value are resolved from the matched token.
+    RemoveWme {
+        /// Identifier expression.
+        id: WmeTerm,
+        /// Attribute symbol.
+        attr: SymbolId,
+        /// Value expression.
+        val: WmeTerm,
+    },
     /// Emits an architectural operator preference.
     Prefer(Preference),
+    /// Stops the agent permanently.
+    Halt,
+    /// Stops the current elaboration phase.
+    Interrupt,
+    /// Appends deterministic text output.
+    Write(String),
+}
+
+/// A symbol literal or a field selected from a matched WME token.
+#[derive(Debug, Clone)]
+pub enum WmeTerm {
+    /// A fixed interned symbol.
+    Literal(SymbolId),
+    /// A variable bound to one field of one LHS WME.
+    Binding { wme_index: usize, field: Field },
+}
+
+#[derive(Debug, Clone)]
+struct NegativePattern {
+    id: WmeTerm,
+    attr: Option<SymbolId>,
+    val: WmeTerm,
+    relation: Relation,
 }
 
 /// The main Soar Cognitive Agent instance coordinating memory, RETE, decision processing, and learning.
@@ -83,6 +128,16 @@ pub struct SoarAgent {
     pub chunks_learned: usize,
     /// Action callbacks mapped to production rules by name.
     pub rule_actions: Vec<(&'static str, Vec<Action>)>,
+    negative_patterns: Vec<(&'static str, Vec<NegativePattern>)>,
+    negative_blocked: Vec<InstantiationId>,
+    /// Goal Dependency Sets: substate IDs mapped to superstate WME dependencies.
+    goal_dependencies: Vec<(SymbolId, Vec<WmeKey>)>,
+    /// Whether a halt RHS function has permanently stopped execution.
+    pub halted: bool,
+    /// Whether an interrupt RHS function stopped the current phase.
+    pub interrupted: bool,
+    /// Deterministic output captured by write RHS functions.
+    pub output: Vec<String>,
 }
 
 /// Alias for `SoarAgent` to satisfy public re-exports.
@@ -108,6 +163,12 @@ impl SoarAgent {
             chunk_builder: ChunkBuilder::new(),
             chunks_learned: 0,
             rule_actions: Vec::new(),
+            negative_patterns: Vec::new(),
+            negative_blocked: Vec::new(),
+            goal_dependencies: Vec::new(),
+            halted: false,
+            interrupted: false,
+            output: Vec::new(),
         }
     }
 
@@ -129,12 +190,25 @@ impl SoarAgent {
     /// parser-level data until their richer AST representation is added.
     pub fn install_soar_script(&mut self, script: &SoarScript, state_id: SymbolId) {
         for production in &script.productions {
-            let mut variables: Vec<(String, usize, Field)> = Vec::new();
-            let conditions = production
+            let expanded_conditions: Vec<SoarCondition> = production
                 .conditions
                 .iter()
                 .enumerate()
-                .map(|(condition_index, condition)| {
+                .flat_map(|(index, condition)| Self::expand_attribute_path(condition, index))
+                .collect();
+            let mut variables: Vec<(String, usize, Field)> = Vec::new();
+            let mut relation_tests = Vec::new();
+            let mut negative_conditions = Vec::new();
+            let mut positive_condition_index = 0;
+            let conditions = expanded_conditions
+                .iter()
+                .filter_map(|condition| {
+                    if condition.negated {
+                        negative_conditions.push(condition);
+                        return None;
+                    }
+                    let condition_index = positive_condition_index;
+                    positive_condition_index += 1;
                     let attr = condition
                         .attribute_variable
                         .is_none()
@@ -144,6 +218,11 @@ impl SoarAgent {
                         SoarValue::Int(value) => format!("{}", value),
                         SoarValue::Float(value) => format!("{}", value),
                         SoarValue::Bool(value) => format!("{}", value),
+                        SoarValue::Disjunction(values) => values
+                            .first()
+                            .map(Self::soar_value_to_string)
+                            .unwrap_or_default(),
+                        SoarValue::Arithmetic { .. } => String::new(),
                     };
                     let val = condition
                         .value_variable
@@ -178,14 +257,40 @@ impl SoarAgent {
                         condition_index,
                         Field::Val,
                     );
-                    (
-                        AlphaTest {
+                    let relation = match condition.relation {
+                        SoarRelation::Equal => Relation::Equal,
+                        SoarRelation::NotEqual => Relation::NotEqual,
+                        SoarRelation::Less => Relation::Less,
+                        SoarRelation::LessOrEqual => Relation::LessOrEqual,
+                        SoarRelation::Greater => Relation::Greater,
+                        SoarRelation::GreaterOrEqual => Relation::GreaterOrEqual,
+                    };
+                    if let Some(number) = match &condition.value {
+                        SoarValue::Int(value) => Some(*value as f64),
+                        SoarValue::Float(value) => Some(*value as f64),
+                        _ => None,
+                    } {
+                        if let Some(symbol) = val {
+                            self.rete.register_numeric_value(symbol, number);
+                        }
+                    }
+                    let alpha_test = AlphaTest {
                             id,
                             attr,
                             val,
-                        },
+                        };
+                    if let SoarValue::Disjunction(values) = &condition.value {
+                        let alternatives: Vec<SymbolId> = values
+                            .iter()
+                            .map(|value| self.symbols.intern_str(&Self::soar_value_to_string(value)))
+                            .collect();
+                        self.rete.register_alternatives(&alpha_test, alternatives);
+                    }
+                    relation_tests.push((alpha_test.clone(), relation));
+                    Some((
+                        alpha_test,
                         bindings,
-                    )
+                    ))
                 })
                 .collect();
 
@@ -216,15 +321,272 @@ impl SoarAgent {
                 SoarPreference::NumericIndifferent => PreferenceType::NumericIndifferent,
             };
             let rule_name: &'static str = Box::leak(production.name.clone().into_boxed_str());
+            let mut negative_patterns = Vec::new();
+            for condition in negative_conditions {
+                let Some(id) = Self::compile_wme_term(
+                    &variables,
+                    condition.identifier.as_deref().unwrap_or(""),
+                    &mut self.symbols,
+                ) else {
+                    continue;
+                };
+                let Some(val) = Self::compile_value_term(
+                    &variables,
+                    &condition.value,
+                    &mut self.symbols,
+                ) else {
+                    continue;
+                };
+                let attr = condition
+                    .attribute_variable
+                    .is_none()
+                    .then(|| self.symbols.intern_str(&condition.attribute));
+                let relation = match condition.relation {
+                    SoarRelation::Equal => Relation::Equal,
+                    SoarRelation::NotEqual => Relation::NotEqual,
+                    SoarRelation::Less => Relation::Less,
+                    SoarRelation::LessOrEqual => Relation::LessOrEqual,
+                    SoarRelation::Greater => Relation::Greater,
+                    SoarRelation::GreaterOrEqual => Relation::GreaterOrEqual,
+                };
+                negative_patterns.push(NegativePattern { id, attr, val, relation });
+            }
+            let mut rule_actions = vec![Action::Prefer(Preference {
+                state: state_id,
+                operator,
+                preference_type,
+            })];
+            for function in &production.rhs_functions {
+                rule_actions.push(match function {
+                    SoarRhsFunction::Halt => Action::Halt,
+                    SoarRhsFunction::Interrupt => Action::Interrupt,
+                    SoarRhsFunction::Write(text) => Action::Write(text.clone()),
+                });
+            }
+            for wme_action in &production.wme_actions {
+                let Some(id) = Self::compile_wme_term(
+                    &variables,
+                    &wme_action.identifier,
+                    &mut self.symbols,
+                ) else {
+                    continue;
+                };
+                let Some(val) = Self::compile_value_term(
+                    &variables,
+                    &wme_action.value,
+                    &mut self.symbols,
+                ) else {
+                    continue;
+                };
+                let attr = self.symbols.intern_str(&wme_action.attribute);
+                if wme_action.remove {
+                    rule_actions.push(Action::RemoveWme { id, attr, val });
+                } else {
+                    rule_actions.push(Action::AddWme { id, attr, val });
+                }
+            }
+            for (test, relation) in &relation_tests {
+                self.rete.register_relation(test, *relation);
+            }
             self.add_rule(
                 rule_name,
                 conditions,
-                vec![Action::Prefer(Preference {
-                    state: state_id,
-                    operator,
-                    preference_type,
-                })],
+                rule_actions,
             );
+            self.negative_patterns.push((rule_name, negative_patterns));
+        }
+    }
+
+    fn expand_attribute_path(condition: &SoarCondition, condition_index: usize) -> Vec<SoarCondition> {
+        let segments: Vec<&str> = condition.attribute.split('.').collect();
+        if segments.len() <= 1 {
+            return vec![condition.clone()];
+        }
+
+        let mut expanded = Vec::new();
+        let mut previous_identifier = condition.identifier.clone();
+        for (segment_index, segment) in segments.iter().enumerate() {
+            let last = segment_index + 1 == segments.len();
+            let next_identifier = format!("<__path{}_{}>", condition_index, segment_index);
+            expanded.push(SoarCondition {
+                identifier: previous_identifier.clone(),
+                attribute: (*segment).to_string(),
+                attribute_variable: None,
+                value: if last {
+                    condition.value.clone()
+                } else {
+                    SoarValue::Symbol(next_identifier.clone())
+                },
+                value_variable: if last {
+                    condition.value_variable.clone()
+                } else {
+                    Some(next_identifier.clone())
+                },
+                relation: if last {
+                    condition.relation
+                } else {
+                    SoarRelation::Equal
+                },
+                negated: condition.negated,
+            });
+            previous_identifier = Some(next_identifier);
+        }
+        expanded
+    }
+
+    fn compile_wme_term(
+        variables: &[(String, usize, Field)],
+        expression: &str,
+        symbols: &mut SymbolTable,
+    ) -> Option<WmeTerm> {
+        if let Some((_, wme_index, field)) = variables.iter().find(|(name, _, _)| name == expression) {
+            return Some(WmeTerm::Binding {
+                wme_index: *wme_index,
+                field: *field,
+            });
+        }
+        (!expression.starts_with('<')).then(|| WmeTerm::Literal(symbols.intern_str(expression)))
+    }
+
+    fn compile_value_term(
+        variables: &[(String, usize, Field)],
+        value: &SoarValue,
+        symbols: &mut SymbolTable,
+    ) -> Option<WmeTerm> {
+        if let SoarValue::Symbol(expression) = value {
+            if expression.starts_with('<') {
+                return Self::compile_wme_term(variables, expression, symbols);
+            }
+        }
+        let literal = match value {
+            SoarValue::Symbol(value) => value.clone(),
+            SoarValue::Int(value) => format!("{}", value),
+            SoarValue::Float(value) => format!("{}", value),
+            SoarValue::Bool(value) => format!("{}", value),
+            SoarValue::Disjunction(_) => return None,
+            SoarValue::Arithmetic { operator, operands } => {
+                Self::evaluate_arithmetic(*operator, operands)?
+            }
+        };
+        Some(WmeTerm::Literal(symbols.intern_str(&literal)))
+    }
+
+    fn soar_value_to_string(value: &SoarValue) -> String {
+        match value {
+            SoarValue::Symbol(value) => value.clone(),
+            SoarValue::Int(value) => format!("{}", value),
+            SoarValue::Float(value) => format!("{}", value),
+            SoarValue::Bool(value) => format!("{}", value),
+            SoarValue::Disjunction(_) => String::new(),
+            SoarValue::Arithmetic { .. } => String::new(),
+        }
+    }
+
+    fn evaluate_arithmetic(operator: char, operands: &[SoarValue]) -> Option<String> {
+        let numbers: Vec<f64> = operands
+            .iter()
+            .map(|operand| match operand {
+                SoarValue::Int(value) => Some(*value as f64),
+                SoarValue::Float(value) => Some(*value as f64),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let first = *numbers.first()?;
+        let result = numbers.iter().skip(1).fold(first, |total, value| match operator {
+            '+' => total + value,
+            '-' => total - value,
+            '*' => total * value,
+            '/' => total / value,
+            _ => total,
+        });
+        Some(if result == result as i64 as f64 {
+            format!("{}", result as i64)
+        } else {
+            format!("{}", result)
+        })
+    }
+
+    fn resolve_wme_term(term: &WmeTerm, matched_wmes: &[crate::rete::WmeRecord]) -> Option<SymbolId> {
+        match term {
+            WmeTerm::Literal(symbol) => Some(*symbol),
+            WmeTerm::Binding { wme_index, field } => matched_wmes
+                .get(*wme_index)
+                .map(|wme| field.extract(&wme.triple)),
+        }
+    }
+
+    fn negative_patterns_match(
+        &self,
+        rule_name: &'static str,
+        matched_wmes: &[crate::rete::WmeRecord],
+    ) -> bool {
+        let Some((_, patterns)) = self
+            .negative_patterns
+            .iter()
+            .find(|(name, _)| *name == rule_name)
+        else {
+            return false;
+        };
+        patterns.iter().any(|pattern| {
+            let (Some(id), Some(val)) = (
+                Self::resolve_wme_term(&pattern.id, matched_wmes),
+                Self::resolve_wme_term(&pattern.val, matched_wmes),
+            ) else {
+                return false;
+            };
+            self.wm.iter().any(|wme| {
+                wme.id == id
+                    && pattern.attr.is_none_or(|attr| attr == wme.attr)
+                    && AlphaTest {
+                        id: None,
+                        attr: None,
+                        val: Some(val),
+                    }
+                    .matches_with_numeric(
+                        wme.id,
+                        wme.attr,
+                        wme.val,
+                        &self.rete.numeric_values,
+                        pattern.relation,
+                        &[],
+                    )
+            })
+        })
+    }
+
+    fn refresh_negative_instantiations(&mut self) {
+        let instantiations = self.rete.active_instantiations.clone();
+        for instantiation in instantiations {
+            let matches = self.negative_patterns_match(
+                instantiation.rule_name,
+                &instantiation.matched_wmes,
+            );
+            let blocked = self.negative_blocked.contains(&instantiation.id);
+            if matches && !blocked {
+                self.negative_blocked.push(instantiation.id);
+                let supporting_wmes: Vec<WmeKey> = instantiation
+                    .matched_wmes
+                    .iter()
+                    .map(|wme| wme.key)
+                    .collect();
+                let derived_wmes = self
+                    .tms
+                    .retract_justification(instantiation.rule_name, &supporting_wmes);
+                for derived in derived_wmes {
+                    self.remove_wme(derived);
+                }
+            } else if !matches && blocked {
+                self.negative_blocked
+                    .retain(|id| *id != instantiation.id);
+                if !self
+                    .rete
+                    .activations
+                    .iter()
+                    .any(|activation| activation.id == instantiation.id)
+                {
+                    self.rete.activations.push(instantiation);
+                }
+            }
         }
     }
 
@@ -253,25 +615,63 @@ impl SoarAgent {
 
     /// Synchronizes Working Memory insertions into the RETE network.
     pub fn insert_wme(&mut self, s: SymbolId, a: SymbolId, v: SymbolId) -> WmeKey {
+        self.insert_wme_with_support(s, a, v, SupportType::ISupport)
+    }
+
+    /// Inserts a WME with an explicit architectural support classification.
+    pub fn insert_wme_with_support(
+        &mut self,
+        s: SymbolId,
+        a: SymbolId,
+        v: SymbolId,
+        support: SupportType,
+    ) -> WmeKey {
         if let Some(existing) = self.wm.find(s, a, v) {
+            if support == SupportType::OSupport {
+                self.wm.set_support(existing, SupportType::OSupport);
+            }
             return existing;
         }
 
-        let key = self.wm.insert(s, a, v, SupportType::ISupport);
+        let key = self.wm.insert(s, a, v, support);
+        for symbol in [s, a, v] {
+            if let Some(SymbolData::String(value)) = self.symbols.resolve(symbol) {
+                if let Ok(number) = value.parse::<f64>() {
+                    self.rete.register_numeric_value(symbol, number);
+                }
+            }
+        }
         self.rete.add_wme(key, s, a, v);
+        self.refresh_negative_instantiations();
         key
     }
 
     /// Synchronizes Working Memory retractions and triggers cascading TMS retractions for unsupported I-supported WMEs.
     pub fn remove_wme(&mut self, key: WmeKey) {
+        let impacted_substates: Vec<SymbolId> = self
+            .goal_dependencies
+            .iter()
+            .filter(|(_, dependencies)| dependencies.contains(&key))
+            .map(|(substate, _)| *substate)
+            .collect();
+        for substate_id in impacted_substates {
+            self.remove_substate(substate_id);
+        }
         self.wm.remove(key);
         self.rete.remove_wme(key);
 
         let dependent_wmes = self.tms.process_retraction(key);
         for dep_key in dependent_wmes {
-            self.wm.remove(dep_key);
-            self.rete.remove_wme(dep_key);
+            if self
+                .wm
+                .get(dep_key)
+                .is_some_and(|wme| wme.support == SupportType::ISupport)
+            {
+                self.wm.remove(dep_key);
+                self.rete.remove_wme(dep_key);
+            }
         }
+        self.refresh_negative_instantiations();
     }
 
     /// Records the current Working Memory snapshot as an episode in Episodic Memory.
@@ -301,7 +701,15 @@ impl SoarAgent {
 
     /// Runs the Proposal Phase: Elaboration rules fire until RETE reaches quiescence.
     pub fn run_elaboration_phase(&mut self) -> usize {
-        self.current_phase = Phase::Proposal;
+        self.run_phase(Phase::Proposal, SupportType::ISupport)
+    }
+
+    fn run_phase(&mut self, phase: Phase, support: SupportType) -> usize {
+        if self.halted {
+            return 0;
+        }
+        self.current_phase = phase;
+        self.interrupted = false;
         let mut total_fires = 0;
         let mut cycles = 0;
 
@@ -311,10 +719,18 @@ impl SoarAgent {
             if activations.is_empty() {
                 break;
             }
+            let mut activations = activations;
+            activations.sort_by_key(|instantiation| self.substate_rank(instantiation));
 
             total_fires += activations.len();
 
             for inst in activations {
+                if self.negative_patterns_match(inst.rule_name, &inst.matched_wmes) {
+                    if !self.negative_blocked.contains(&inst.id) {
+                        self.negative_blocked.push(inst.id);
+                    }
+                    continue;
+                }
                 if let Some((_, actions)) =
                     self.rule_actions.iter().find(|(name, _)| *name == inst.rule_name)
                 {
@@ -324,16 +740,37 @@ impl SoarAgent {
                     for action in actions_to_run {
                         match &action {
                             Action::Add { id, attr, val } => {
-                                let wme_key = self.insert_wme(*id, *attr, *val);
+                                let wme_key =
+                                    self.insert_wme_with_support(*id, *attr, *val, support);
+                                derived_wmes.push(wme_key);
+                            }
+                            Action::AddWme { id, attr, val } => {
+                                let (Some(id), Some(val)) = (
+                                    Self::resolve_wme_term(id, &inst.matched_wmes),
+                                    Self::resolve_wme_term(val, &inst.matched_wmes),
+                                ) else {
+                                    continue;
+                                };
+                                let wme_key =
+                                    self.insert_wme_with_support(id, *attr, val, support);
                                 derived_wmes.push(wme_key);
                             }
                             Action::Remove(key) => {
                                 self.remove_wme(*key);
                             }
-                            Action::Prefer(pref) => {
-                                if !self.preferences.contains(pref) {
-                                    self.preferences.push(pref.clone());
+                            Action::RemoveWme { id, attr, val } => {
+                                let (Some(id), Some(val)) = (
+                                    Self::resolve_wme_term(id, &inst.matched_wmes),
+                                    Self::resolve_wme_term(val, &inst.matched_wmes),
+                                ) else {
+                                    continue;
+                                };
+                                if let Some(key) = self.wm.find(id, *attr, val) {
+                                    self.remove_wme(key);
                                 }
+                            }
+                            Action::Prefer(pref) => {
+                                self.preferences.push(pref.clone());
 
                                 if let Some(substate) = self.substates.last() {
                                     if pref.state == substate.superstate_id {
@@ -344,10 +781,22 @@ impl SoarAgent {
                                     }
                                 }
                             }
+                            Action::Halt => {
+                                self.halted = true;
+                            }
+                            Action::Interrupt => {
+                                self.interrupted = true;
+                            }
+                            Action::Write(text) => {
+                                self.output.push(text.clone());
+                            }
+                        }
+                        if self.halted || self.interrupted {
+                            break;
                         }
                     }
 
-                    if !derived_wmes.is_empty() {
+                    if support == SupportType::ISupport && !derived_wmes.is_empty() {
                         let supporting_keys: Vec<WmeKey> =
                             inst.matched_wmes.iter().map(|w| w.key).collect();
 
@@ -356,12 +805,58 @@ impl SoarAgent {
                             supporting_keys,
                             derived_wmes,
                         );
+                    } else if support == SupportType::OSupport && !derived_wmes.is_empty() {
+                        self.record_goal_dependencies(&inst.matched_wmes);
                     }
                 }
+                if self.halted || self.interrupted {
+                    break;
+                }
+            }
+            if self.halted || self.interrupted {
+                break;
             }
         }
 
         total_fires
+    }
+
+    fn substate_rank(&self, instantiation: &crate::rete::Instantiation) -> usize {
+        self.substates
+            .iter()
+            .position(|substate| {
+                instantiation
+                    .matched_wmes
+                    .iter()
+                    .any(|wme| wme.triple.0 == substate.substate_id)
+            })
+            .map(|index| index + 1)
+            .unwrap_or(0)
+    }
+
+    fn record_goal_dependencies(&mut self, matched_wmes: &[crate::rete::WmeRecord]) {
+        let Some(substate) = self.substates.last() else {
+            return;
+        };
+        let dependencies: Vec<WmeKey> = matched_wmes
+            .iter()
+            .filter(|wme| wme.triple.0 != substate.substate_id)
+            .map(|wme| wme.key)
+            .collect();
+        if let Some((_, existing)) = self
+            .goal_dependencies
+            .iter_mut()
+            .find(|(substate_id, _)| *substate_id == substate.substate_id)
+        {
+            for dependency in dependencies {
+                if !existing.contains(&dependency) {
+                    existing.push(dependency);
+                }
+            }
+        } else {
+            self.goal_dependencies
+                .push((substate.substate_id, dependencies));
+        }
     }
 
     /// Resolves superstate conditions and automatically registers a learned Chunk rule into RETE.
@@ -385,6 +880,7 @@ impl SoarAgent {
     pub fn run_decision_phase(&mut self, state_id: SymbolId) -> DecisionResult {
         self.current_phase = Phase::Decision;
         let result = resolve_preferences_with_rl(state_id, &self.preferences, &self.rl);
+        let previous_operator = self.selected_operator;
 
         match &result {
             DecisionResult::Selected(op_id) => {
@@ -405,7 +901,33 @@ impl SoarAgent {
             }
         }
 
+        self.sync_selected_operator_wme(state_id, previous_operator);
+
         result
+    }
+
+    fn sync_selected_operator_wme(
+        &mut self,
+        state_id: SymbolId,
+        previous_operator: Option<SymbolId>,
+    ) {
+        let operator_attr = self.symbols.intern_str("operator");
+        if previous_operator != self.selected_operator {
+            if let Some(previous_operator) = previous_operator {
+                if let Some(key) = self.wm.find(state_id, operator_attr, previous_operator) {
+                    self.remove_wme(key);
+                }
+            }
+        }
+
+        if let Some(operator) = self.selected_operator {
+            self.insert_wme_with_support(
+                state_id,
+                operator_attr,
+                operator,
+                SupportType::OSupport,
+            );
+        }
     }
 
     /// Purges a substate and all associated Working Memory elements from the agent.
@@ -418,24 +940,35 @@ impl SoarAgent {
             }
         }
 
-        for (idx, substate_id) in to_remove.into_iter().rev() {
-            let wme_keys = self.wm.wmes_by_id(substate_id);
-            for key in wme_keys {
-                self.remove_wme(key);
-            }
+        for (_, substate_id) in to_remove.into_iter().rev() {
+            self.remove_substate(substate_id);
+        }
+    }
 
-            self.substates.remove(idx);
+    fn remove_substate(&mut self, substate_id: SymbolId) {
+        self.goal_dependencies
+            .retain(|(id, _)| *id != substate_id);
+        let wme_keys = self.wm.wmes_by_id(substate_id);
+        for key in wme_keys {
+            self.wm.remove(key);
+            self.rete.remove_wme(key);
+        }
+        if let Some(index) = self
+            .substates
+            .iter()
+            .position(|record| record.substate_id == substate_id)
+        {
+            self.substates.remove(index);
         }
     }
 
     /// Runs Application Phase rules matching the currently selected operator until quiescence.
     pub fn run_application_phase(&mut self) -> usize {
-        self.current_phase = Phase::Application;
         if self.selected_operator.is_none() {
             return 0;
         }
 
-        self.run_elaboration_phase()
+        self.run_phase(Phase::Application, SupportType::OSupport)
     }
 
     /// Executes one complete 5-phase Soar Decision Cycle and records an autobiographical episode.
@@ -479,8 +1012,13 @@ impl SoarAgent {
         let attr_type = self.symbols.intern_str("type");
         let attr_impasse = self.symbols.intern_str("impasse");
         let attr_item = self.symbols.intern_str("item");
+        let attr_choices = self.symbols.intern_str("choices");
+        let attr_attribute = self.symbols.intern_str("attribute");
 
-        let val_impasse = self.symbols.intern_str("impasse");
+        let val_state = self.symbols.intern_str("state");
+        let val_multiple = self.symbols.intern_str("multiple");
+        let val_none = self.symbols.intern_str("none");
+        let val_operator = self.symbols.intern_str("operator");
         let val_type_str = match impasse_type {
             ImpasseType::Tie => self.symbols.intern_str("tie"),
             ImpasseType::Conflict => self.symbols.intern_str("conflict"),
@@ -488,8 +1026,14 @@ impl SoarAgent {
         };
 
         self.insert_wme(substate_id, attr_superstate, superstate_id);
-        self.insert_wme(substate_id, attr_type, val_impasse);
+        self.insert_wme(substate_id, attr_type, val_state);
         self.insert_wme(substate_id, attr_impasse, val_type_str);
+        self.insert_wme(
+            substate_id,
+            attr_choices,
+            if candidates.is_empty() { val_none } else { val_multiple },
+        );
+        self.insert_wme(substate_id, attr_attribute, val_operator);
 
         for &cand in candidates {
             self.insert_wme(substate_id, attr_item, cand);

@@ -54,6 +54,8 @@ pub fn soar_condition_matches(condition: &SoarCondition, telemetry: &FlightTelem
             (telemetry.engine_status == 0 && expected == "normal")
                 || (telemetry.engine_status == 2 && expected == "critical")
         }
+        (_, SoarValue::Disjunction(_)) => false,
+        (_, SoarValue::Arithmetic { .. }) => false,
         _ => false,
     }
 }

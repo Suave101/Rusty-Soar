@@ -26,6 +26,80 @@ fn test_wme_insert_and_retract() {
 }
 
 #[test]
+fn test_i_support_retracts_and_o_support_persists() {
+    let mut proposal_agent = SoarAgent::new();
+    let proposal_state = proposal_agent.symbols.intern_id('S', 1);
+    let trigger = proposal_agent.symbols.intern_str("trigger");
+    let active = proposal_agent.symbols.intern_str("active");
+    let result = proposal_agent.symbols.intern_str("result");
+    let complete = proposal_agent.symbols.intern_str("complete");
+    proposal_agent.add_rule(
+        "proposal-support",
+        vec![(
+            AlphaTest {
+                id: Some(proposal_state),
+                attr: Some(trigger),
+                val: Some(active),
+            },
+            vec![],
+        )],
+        vec![Action::Add {
+            id: proposal_state,
+            attr: result,
+            val: complete,
+        }],
+    );
+    let proposal_trigger = proposal_agent.insert_wme(proposal_state, trigger, active);
+    proposal_agent.run_elaboration_phase();
+    let proposal_result = proposal_agent
+        .wm
+        .find(proposal_state, result, complete)
+        .expect("proposal should derive a result");
+    assert_eq!(
+        proposal_agent.wm.get(proposal_result).unwrap().support,
+        SupportType::ISupport
+    );
+    proposal_agent.remove_wme(proposal_trigger);
+    assert!(proposal_agent.wm.get(proposal_result).is_none());
+
+    let mut application_agent = SoarAgent::new();
+    let application_state = application_agent.symbols.intern_id('S', 1);
+    let trigger = application_agent.symbols.intern_str("trigger");
+    let active = application_agent.symbols.intern_str("active");
+    let result = application_agent.symbols.intern_str("result");
+    let complete = application_agent.symbols.intern_str("complete");
+    application_agent.add_rule(
+        "application-support",
+        vec![(
+            AlphaTest {
+                id: Some(application_state),
+                attr: Some(trigger),
+                val: Some(active),
+            },
+            vec![],
+        )],
+        vec![Action::Add {
+            id: application_state,
+            attr: result,
+            val: complete,
+        }],
+    );
+    let application_trigger = application_agent.insert_wme(application_state, trigger, active);
+    application_agent.selected_operator = Some(application_agent.symbols.intern_str("apply"));
+    application_agent.run_application_phase();
+    let application_result = application_agent
+        .wm
+        .find(application_state, result, complete)
+        .expect("application should derive a result");
+    assert_eq!(
+        application_agent.wm.get(application_result).unwrap().support,
+        SupportType::OSupport
+    );
+    application_agent.remove_wme(application_trigger);
+    assert!(application_agent.wm.get(application_result).is_some());
+}
+
+#[test]
 fn test_working_memory_is_a_set() {
     let mut agent = SoarAgent::new();
     let id = agent.symbols.intern_id('S', 1);
@@ -73,6 +147,115 @@ fn test_preference_resolution() {
         Some(op_a),
         "Operator B was rejected; Operator A must be selected"
     );
+}
+
+#[test]
+fn test_selected_operator_is_architectural_wme() {
+    let mut agent = SoarAgent::new();
+    let state = agent.symbols.intern_id('S', 1);
+    let first = agent.symbols.intern_id('O', 1);
+    let second = agent.symbols.intern_id('O', 2);
+    let operator_attr = agent.symbols.intern_str("operator");
+
+    agent.preferences.push(Preference {
+        state,
+        operator: first,
+        preference_type: PreferenceType::Acceptable,
+    });
+    assert_eq!(agent.run_decision_phase(state), DecisionResult::Selected(first));
+    let first_key = agent
+        .wm
+        .find(state, operator_attr, first)
+        .expect("selected operator WME");
+    assert_eq!(agent.wm.get(first_key).unwrap().support, SupportType::OSupport);
+
+    agent.preferences.push(Preference {
+        state,
+        operator: second,
+        preference_type: PreferenceType::Require,
+    });
+    assert_eq!(agent.run_decision_phase(state), DecisionResult::Selected(second));
+    assert!(agent.wm.find(state, operator_attr, first).is_none());
+    assert!(agent.wm.find(state, operator_attr, second).is_some());
+}
+
+#[test]
+fn test_impasse_substate_has_architectural_fields() {
+    let mut agent = SoarAgent::new();
+    let state = agent.symbols.intern_id('S', 1);
+    let first = agent.symbols.intern_id('O', 1);
+    let second = agent.symbols.intern_id('O', 2);
+    agent.preferences.extend([
+        Preference {
+            state,
+            operator: first,
+            preference_type: PreferenceType::Acceptable,
+        },
+        Preference {
+            state,
+            operator: second,
+            preference_type: PreferenceType::Acceptable,
+        },
+    ]);
+
+    assert!(matches!(
+        agent.run_decision_phase(state),
+        DecisionResult::TieImpasse(_)
+    ));
+    let substate = agent.substates[0].substate_id;
+    let type_attr = agent.symbols.intern_str("type");
+    let choices_attr = agent.symbols.intern_str("choices");
+    let attribute_attr = agent.symbols.intern_str("attribute");
+    assert!(agent
+        .wm
+        .find(substate, type_attr, agent.symbols.intern_str("state"))
+        .is_some());
+    assert!(agent
+        .wm
+        .find(substate, choices_attr, agent.symbols.intern_str("multiple"))
+        .is_some());
+    assert!(agent
+        .wm
+        .find(substate, attribute_attr, agent.symbols.intern_str("operator"))
+        .is_some());
+}
+
+#[test]
+fn test_duplicate_preferences_are_preserved() {
+    let mut agent = SoarAgent::new();
+    let state = agent.symbols.intern_id('S', 1);
+    let operator = agent.symbols.intern_id('O', 1);
+    let attribute = agent.symbols.intern_str("sensor");
+    let value = agent.symbols.intern_str("ready");
+    let conditions = vec![(
+        AlphaTest {
+            id: Some(state),
+            attr: Some(attribute),
+            val: Some(value),
+        },
+        vec![],
+    )];
+    let preference = Preference {
+        state,
+        operator,
+        preference_type: PreferenceType::Acceptable,
+    };
+
+    agent.add_rule(
+        "first-proposal",
+        conditions.clone(),
+        vec![Action::Prefer(preference.clone())],
+    );
+    agent.add_rule(
+        "second-proposal",
+        conditions,
+        vec![Action::Prefer(preference.clone())],
+    );
+    agent.insert_wme(state, attribute, value);
+
+    assert_eq!(agent.run_elaboration_phase(), 2);
+    assert_eq!(agent.preferences, vec![preference.clone(), preference]);
+    assert_eq!(agent.run_decision_phase(state), DecisionResult::Selected(operator));
 }
 
 #[test]
@@ -165,7 +348,7 @@ fn test_multi_condition_production() {
 }
 
 #[test]
-fn test_elaboration_has_deterministic_cycle_budget() {
+fn test_elaboration_fires_each_binding_once_until_retraction() {
     let mut agent = SoarAgent::new();
     let state = agent.symbols.intern_id('S', 1);
     let attr = agent.symbols.intern_str("loop");
@@ -189,8 +372,54 @@ fn test_elaboration_has_deterministic_cycle_budget() {
     );
     agent.insert_wme(state, attr, value);
 
-    assert_eq!(agent.run_elaboration_phase(), 10);
+    assert_eq!(agent.run_elaboration_phase(), 1);
+    assert_eq!(agent.run_elaboration_phase(), 0);
+        let first_instantiation = agent.rete.active_instantiations[0].id;
+
+    let wme = agent.wm.find(state, attr, value).expect("source WME exists");
+    agent.remove_wme(wme);
+    agent.insert_wme(state, attr, value);
+    assert_eq!(agent.run_elaboration_phase(), 1);
+        let second_instantiation = agent.rete.active_instantiations[0].id;
+        assert_ne!(first_instantiation, second_instantiation);
 }
+
+    #[test]
+    fn test_elaboration_reaches_quiescence_past_legacy_cycle_limit() {
+        let mut agent = SoarAgent::new();
+        let state = agent.symbols.intern_id('S', 1);
+        let active = agent.symbols.intern_str("active");
+        let mut attributes = Vec::new();
+        for index in 0..=12 {
+            attributes.push(agent.symbols.intern_str(&format!("stage{index}")));
+        }
+
+        for index in 0..12 {
+            let name: &'static str = Box::leak(format!("chain-{index}").into_boxed_str());
+            agent.add_rule(
+                name,
+                vec![
+                    (
+                        AlphaTest {
+                            id: Some(state),
+                            attr: Some(attributes[index]),
+                            val: Some(active),
+                        },
+                        vec![],
+                    ),
+                ],
+                vec![Action::Add {
+                    id: state,
+                    attr: attributes[index + 1],
+                    val: active,
+                }],
+            );
+        }
+
+        agent.insert_wme(state, attributes[0], active);
+        assert_eq!(agent.run_elaboration_phase(), 12);
+        assert!(agent.wm.find(state, attributes[12], active).is_some());
+    }
 
 #[test]
 fn test_tms_preserves_independently_supported_wme() {
@@ -325,6 +554,235 @@ fn test_parsed_soar_script_installs_and_runs() {
 }
 
 #[test]
+fn test_parsed_numeric_relation_matches_wme_value() {
+    let script = rusty_soar_core::soar_parser::SoarScript::parse(
+        r#"
+        sp {high-altitude
+            (state <s> ^altitude > 100)
+        -->
+            (<s> ^result high)
+        }
+        "#,
+    )
+    .expect("script should parse");
+
+    assert_eq!(
+        script.productions[0].conditions[0].relation,
+        rusty_soar_core::soar_parser::SoarRelation::Greater
+    );
+
+    let mut agent = SoarAgent::new();
+    let state = agent.symbols.intern_id('S', 1);
+    agent.install_soar_script(&script, state);
+    let altitude = agent.symbols.intern_str("altitude");
+    let value = agent.symbols.intern_str("150");
+    agent.insert_wme(state, altitude, value);
+
+    agent.run_elaboration_phase();
+    assert!(agent
+        .wm
+        .find(state, agent.symbols.intern_str("result"), agent.symbols.intern_str("high"))
+        .is_some());
+}
+
+#[test]
+fn test_parsed_disjunction_matches_any_alternative() {
+    let script = rusty_soar_core::soar_parser::SoarScript::parse(
+        r#"
+        sp {color-match
+            (state <s> ^color << red blue >>)
+        -->
+            (<s> ^result colorful)
+        }
+        "#,
+    )
+    .expect("script should parse");
+
+    assert!(matches!(
+        script.productions[0].conditions[0].value,
+        rusty_soar_core::soar_parser::SoarValue::Disjunction(_)
+    ));
+
+    for color in ["red", "blue"] {
+        let mut agent = SoarAgent::new();
+        let state = agent.symbols.intern_id('S', 1);
+        agent.install_soar_script(&script, state);
+        let color_attr = agent.symbols.intern_str("color");
+        let color_value = agent.symbols.intern_str(color);
+        agent.insert_wme(state, color_attr, color_value);
+        agent.run_elaboration_phase();
+        assert!(agent
+            .wm
+            .find(state, agent.symbols.intern_str("result"), agent.symbols.intern_str("colorful"))
+            .is_some());
+    }
+}
+
+#[test]
+fn test_parsed_attribute_path_matches_linked_wmes() {
+    let script = rusty_soar_core::soar_parser::SoarScript::parse(
+        r#"
+        sp {location-match
+            (state <s> ^location.name home)
+        -->
+            (<s> ^result located)
+        }
+        "#,
+    )
+    .expect("script should parse");
+
+    assert_eq!(script.productions[0].conditions[0].attribute, "location.name");
+
+    let mut agent = SoarAgent::new();
+    let state = agent.symbols.intern_id('S', 1);
+    let location = agent.symbols.intern_id('L', 1);
+    agent.install_soar_script(&script, state);
+    let location_attr = agent.symbols.intern_str("location");
+    let name_attr = agent.symbols.intern_str("name");
+    let home = agent.symbols.intern_str("home");
+    agent.insert_wme(state, location_attr, location);
+    agent.insert_wme(location, name_attr, home);
+    agent.run_elaboration_phase();
+    assert!(agent
+        .wm
+        .find(state, agent.symbols.intern_str("result"), agent.symbols.intern_str("located"))
+        .is_some());
+}
+
+#[test]
+fn test_basic_rhs_control_functions_execute_deterministically() {
+    let script = rusty_soar_core::soar_parser::SoarScript::parse(
+        r#"
+        sp {write-rule
+            (state <s> ^ready yes)
+        -->
+            (write hello)
+        }
+        sp {interrupt-rule
+            (state <s> ^ready yes)
+        -->
+            (interrupt)
+        }
+        "#,
+    )
+    .expect("script should parse");
+
+    assert_eq!(script.productions[0].rhs_functions.len(), 1);
+    let mut agent = SoarAgent::new();
+    let state = agent.symbols.intern_id('S', 1);
+    agent.install_soar_script(&script, state);
+    let ready = agent.symbols.intern_str("ready");
+    let yes = agent.symbols.intern_str("yes");
+    agent.insert_wme(state, ready, yes);
+
+    assert_eq!(agent.run_elaboration_phase(), 2);
+    assert!(agent.interrupted);
+    assert_eq!(agent.output, vec!["hello".to_string()]);
+
+    let halt_script = rusty_soar_core::soar_parser::SoarScript::parse(
+        r#"
+        sp {halt-rule
+            (state <s> ^ready yes)
+        -->
+            (halt)
+        }
+        "#,
+    )
+    .expect("halt script should parse");
+    let mut halted_agent = SoarAgent::new();
+    let state = halted_agent.symbols.intern_id('S', 1);
+    halted_agent.install_soar_script(&halt_script, state);
+    let ready = halted_agent.symbols.intern_str("ready");
+    let yes = halted_agent.symbols.intern_str("yes");
+    halted_agent.insert_wme(state, ready, yes);
+    assert_eq!(halted_agent.run_elaboration_phase(), 1);
+    assert!(halted_agent.halted);
+    assert_eq!(halted_agent.run_elaboration_phase(), 0);
+}
+
+#[test]
+fn test_constant_rhs_arithmetic_creates_typed_result_symbol() {
+    let script = rusty_soar_core::soar_parser::SoarScript::parse(
+        r#"
+        sp {calculate
+            (state <s> ^ready yes)
+        -->
+            (<s> ^sum (+ 1 2))
+        }
+        "#,
+    )
+    .expect("arithmetic script should parse");
+
+    let mut agent = SoarAgent::new();
+    let state = agent.symbols.intern_id('S', 1);
+    agent.install_soar_script(&script, state);
+    let ready = agent.symbols.intern_str("ready");
+    let yes = agent.symbols.intern_str("yes");
+    agent.insert_wme(state, ready, yes);
+    agent.run_elaboration_phase();
+
+    let sum = agent.symbols.intern_str("sum");
+    let three = agent.symbols.intern_str("3");
+    assert!(agent.wm.find(state, sum, three).is_some());
+}
+
+#[test]
+fn test_negated_condition_is_preserved_in_ast() {
+    let script = rusty_soar_core::soar_parser::SoarScript::parse(
+        r#"
+        sp {without-block
+            (state <s> ^ready yes)
+            -(<s> ^blocked yes)
+        -->
+            (<s> ^result clear)
+        }
+        "#,
+    )
+    .expect("script should parse");
+
+    assert!(script.productions[0].conditions[1].negated);
+
+    let mut clear_agent = SoarAgent::new();
+    let state = clear_agent.symbols.intern_id('S', 1);
+    clear_agent.install_soar_script(&script, state);
+    let ready = clear_agent.symbols.intern_str("ready");
+    let yes = clear_agent.symbols.intern_str("yes");
+    clear_agent.insert_wme(state, ready, yes);
+    clear_agent.run_elaboration_phase();
+    assert!(clear_agent
+        .wm
+        .find(state, clear_agent.symbols.intern_str("result"), clear_agent.symbols.intern_str("clear"))
+        .is_some());
+    let blocked = clear_agent.symbols.intern_str("blocked");
+    let yes = clear_agent.symbols.intern_str("yes");
+    let blocker = clear_agent.insert_wme(state, blocked, yes);
+    assert!(clear_agent
+        .wm
+        .find(state, clear_agent.symbols.intern_str("result"), clear_agent.symbols.intern_str("clear"))
+        .is_none());
+    clear_agent.remove_wme(blocker);
+    clear_agent.run_elaboration_phase();
+    assert!(clear_agent
+        .wm
+        .find(state, clear_agent.symbols.intern_str("result"), clear_agent.symbols.intern_str("clear"))
+        .is_some());
+
+    let mut blocked_agent = SoarAgent::new();
+    let state = blocked_agent.symbols.intern_id('S', 1);
+    blocked_agent.install_soar_script(&script, state);
+    let blocked = blocked_agent.symbols.intern_str("blocked");
+    let ready = blocked_agent.symbols.intern_str("ready");
+    let yes = blocked_agent.symbols.intern_str("yes");
+    blocked_agent.insert_wme(state, blocked, yes);
+    blocked_agent.insert_wme(state, ready, yes);
+    blocked_agent.run_elaboration_phase();
+    assert!(blocked_agent
+        .wm
+        .find(state, blocked_agent.symbols.intern_str("result"), blocked_agent.symbols.intern_str("clear"))
+        .is_none());
+}
+
+#[test]
 fn test_parsed_soar_script_preserves_identifier_joins() {
     let script = rusty_soar_core::soar_parser::SoarScript::parse(
         r#"
@@ -418,4 +876,44 @@ fn test_soar_rhs_wme_actions_are_preserved() {
     assert_eq!(script.productions[0].wme_actions.len(), 2);
     assert_eq!(script.productions[0].wme_actions[0].attribute, "result");
     assert!(script.productions[0].wme_actions[1].remove);
+}
+
+#[test]
+fn test_parsed_soar_rhs_wme_actions_execute_with_bindings() {
+    let script = rusty_soar_core::soar_parser::SoarScript::parse(
+        r#"
+        sp {add-result
+            (state <s> ^sensor ready)
+        -->
+            (<s> ^result complete)
+        }
+        sp {consume-result
+            (state <s> ^result complete)
+        -->
+            (<s> ^observed matched)
+        }
+        sp {remove-result
+            (state <s> ^observed matched)
+        -->
+            (<s> ^result complete -)
+        }
+        "#,
+    )
+    .expect("script should parse");
+
+    let mut agent = SoarAgent::new();
+    let state = agent.symbols.intern_id('S', 1);
+    agent.install_soar_script(&script, state);
+    let sensor = agent.symbols.intern_str("sensor");
+    let ready = agent.symbols.intern_str("ready");
+    agent.insert_wme(state, sensor, ready);
+
+    agent.run_elaboration_phase();
+
+    let result = agent.symbols.intern_str("result");
+    let complete = agent.symbols.intern_str("complete");
+    let observed = agent.symbols.intern_str("observed");
+    let matched = agent.symbols.intern_str("matched");
+    assert!(agent.wm.find(state, result, complete).is_none());
+    assert!(agent.wm.find(state, observed, matched).is_none());
 }

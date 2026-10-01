@@ -70,8 +70,9 @@ pub fn resolve_preferences_with_rl(
         .filter(|p| p.state == state_id)
         .collect();
 
-    // 1. Apply hard constraints before collecting candidates.
-    let rejected: Vec<SymbolId> = state_prefs
+    // 1. RequireTest: duplicate assertions do not create duplicate candidates.
+    let rejected = sorted_unique(
+        state_prefs
         .iter()
         .filter(|p| {
             matches!(
@@ -80,12 +81,15 @@ pub fn resolve_preferences_with_rl(
             )
         })
         .map(|p| p.operator)
-        .collect();
-    let required: Vec<SymbolId> = state_prefs
+        .collect(),
+    );
+    let required = sorted_unique(
+        state_prefs
         .iter()
         .filter(|p| p.preference_type == PreferenceType::Require)
         .map(|p| p.operator)
-        .collect();
+        .collect(),
+    );
 
     if required.len() > 1 || required.iter().any(|operator| rejected.contains(operator)) {
         return DecisionResult::ConflictImpasse(required);
@@ -95,15 +99,15 @@ pub fn resolve_preferences_with_rl(
         return DecisionResult::Selected(operator);
     }
 
-    // 2. Collect acceptable candidates not in rejected list
-    let mut candidates: Vec<SymbolId> = state_prefs
+    // 2-4. AcceptableCollect, ProhibitFilter, and RejectFilter.
+    let mut candidates = sorted_unique(
+        state_prefs
         .iter()
         .filter(|p| p.preference_type == PreferenceType::Acceptable)
         .map(|p| p.operator)
         .filter(|op| !rejected.contains(op))
-        .collect();
-
-    candidates.dedup();
+        .collect(),
+    );
 
     if candidates.is_empty() {
         return DecisionResult::NoChangeImpasse;
@@ -113,24 +117,27 @@ pub fn resolve_preferences_with_rl(
         return DecisionResult::Selected(candidates[0]);
     }
 
-    let explicitly_dominated: Vec<SymbolId> = state_prefs
+    // 5. BetterWorseFilter.
+    let explicitly_dominated = sorted_unique(
+        state_prefs
         .iter()
         .filter_map(|pref| match pref.preference_type {
             PreferenceType::Better(other) if candidates.contains(&other) => Some(other),
             PreferenceType::Worse(other) if candidates.contains(&other) => Some(pref.operator),
             _ => None,
         })
-        .collect();
+        .collect(),
+    );
 
     candidates.retain(|op| !explicitly_dominated.contains(op));
 
     if candidates.is_empty() {
         return DecisionResult::ConflictImpasse(
-            state_prefs
+            sorted_unique(state_prefs
                 .iter()
                 .filter(|p| p.preference_type == PreferenceType::Acceptable)
                 .map(|p| p.operator)
-                .collect(),
+                .collect()),
         );
     }
 
@@ -138,6 +145,7 @@ pub fn resolve_preferences_with_rl(
         return DecisionResult::Selected(candidates[0]);
     }
 
+    // 6. BestFilter.
     let best: Vec<SymbolId> = candidates
         .iter()
         .copied()
@@ -156,6 +164,7 @@ pub fn resolve_preferences_with_rl(
         return DecisionResult::Selected(candidates[0]);
     }
 
+    // 7. WorstFilter.
     let non_worst: Vec<SymbolId> = candidates
         .iter()
         .copied()
@@ -170,26 +179,47 @@ pub fn resolve_preferences_with_rl(
         candidates = non_worst;
     }
 
-    // 3. Multi-candidate tie-breaking using RL Q-values Q(s, a)
-    let mut max_q = f32::NEG_INFINITY;
-    let mut best_candidates = Vec::new();
+    // 8. IndifferentFilter. Numeric-indifferent candidates use deterministic
+    // Q-value ordering; ordinary ties remain explicit impasses.
+    let numeric_candidates: Vec<SymbolId> = candidates
+        .iter()
+        .copied()
+        .filter(|operator| {
+            state_prefs.iter().any(|preference| {
+                preference.operator == *operator
+                    && preference.preference_type == PreferenceType::NumericIndifferent
+            })
+        })
+        .collect();
 
-    for &op in &candidates {
-        let q = rl.get_q_value(state_id, op);
-        if q > max_q + 1e-6 {
-            max_q = q;
-            best_candidates.clear();
-            best_candidates.push(op);
-        } else if (q - max_q).abs() <= 1e-6 {
-            best_candidates.push(op);
+    if numeric_candidates.is_empty() {
+        DecisionResult::TieImpasse(candidates)
+    } else {
+        let mut max_q = f32::NEG_INFINITY;
+        let mut best_candidates = Vec::new();
+        for operator in numeric_candidates {
+            let q = rl.get_q_value(state_id, operator);
+            if q > max_q + 1e-6 {
+                max_q = q;
+                best_candidates.clear();
+                best_candidates.push(operator);
+            } else if (q - max_q).abs() <= 1e-6 {
+                best_candidates.push(operator);
+            }
+        }
+
+        if best_candidates.len() == 1 {
+            DecisionResult::Selected(best_candidates[0])
+        } else {
+            DecisionResult::TieImpasse(best_candidates)
         }
     }
+}
 
-    if best_candidates.len() == 1 {
-        DecisionResult::Selected(best_candidates[0])
-    } else {
-        DecisionResult::TieImpasse(best_candidates)
-    }
+fn sorted_unique(mut values: Vec<SymbolId>) -> Vec<SymbolId> {
+    values.sort_unstable();
+    values.dedup();
+    values
 }
 
 #[cfg(test)]
@@ -211,8 +241,18 @@ mod tests {
             },
             Preference {
                 state: s1,
+                operator: o1,
+                preference_type: PreferenceType::NumericIndifferent,
+            },
+            Preference {
+                state: s1,
                 operator: o2,
                 preference_type: PreferenceType::Acceptable,
+            },
+            Preference {
+                state: s1,
+                operator: o2,
+                preference_type: PreferenceType::NumericIndifferent,
             },
         ];
 

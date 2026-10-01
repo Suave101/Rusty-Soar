@@ -16,6 +16,27 @@ pub enum SoarValue {
     Float(f32),
     /// Boolean literal.
     Bool(bool),
+    /// One of several literal alternatives in a disjunctive condition test.
+    Disjunction(Vec<SoarValue>),
+    /// A typed arithmetic RHS expression.
+    Arithmetic { operator: char, operands: Vec<SoarValue> },
+}
+
+/// Relational predicate applied to a condition test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SoarRelation {
+    /// Exact equality.
+    Equal,
+    /// Inequality.
+    NotEqual,
+    /// Numeric less-than comparison.
+    Less,
+    /// Numeric less-than-or-equal comparison.
+    LessOrEqual,
+    /// Numeric greater-than comparison.
+    Greater,
+    /// Numeric greater-than-or-equal comparison.
+    GreaterOrEqual,
 }
 
 /// Attribute-Value condition inside a Soar production LHS.
@@ -31,6 +52,10 @@ pub struct SoarCondition {
     pub value: SoarValue,
     /// Value variable, when the rule binds a variable in the value position.
     pub value_variable: Option<String>,
+    /// Relational predicate for the value test.
+    pub relation: SoarRelation,
+    /// Whether this condition tests for absence rather than presence.
+    pub negated: bool,
 }
 
 /// Preference marker parsed from an operator RHS action.
@@ -77,6 +102,17 @@ pub struct SoarAction {
     pub preference: SoarPreference,
 }
 
+/// Side-effecting function invoked by a production RHS.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SoarRhsFunction {
+    /// Stop the agent permanently.
+    Halt,
+    /// Stop processing the current phase.
+    Interrupt,
+    /// Append text to the deterministic agent output buffer.
+    Write(String),
+}
+
 /// AST representation of a Soar Production (`sp { ... }`).
 #[derive(Debug, Clone)]
 pub struct SoarProduction {
@@ -88,6 +124,8 @@ pub struct SoarProduction {
     pub actions: Vec<SoarAction>,
     /// Working-memory mutations on the RHS.
     pub wme_actions: Vec<SoarWmeAction>,
+    /// Side-effecting RHS functions.
+    pub rhs_functions: Vec<SoarRhsFunction>,
 }
 
 /// Errors encountered while parsing `.soar` scripts.
@@ -368,7 +406,9 @@ impl SoarScript {
 
         for line in lhs.lines() {
             let line = line.trim();
-            let identifier = line
+            let negated = line.starts_with('-');
+            let condition_line = line.trim_start_matches('-').trim();
+            let identifier = condition_line
                 .split('^')
                 .next()
                 .map(str::trim)
@@ -387,7 +427,7 @@ impl SoarScript {
                         _ => None,
                     }
                 });
-            let chunks: Vec<&str> = line.split('^').collect();
+            let chunks: Vec<&str> = condition_line.split('^').collect();
             for chunk in chunks.iter().skip(1) {
                 let clean_chunk = chunk.trim().trim_end_matches(')');
                 let tokens: Vec<&str> = clean_chunk.split_whitespace().collect();
@@ -396,22 +436,40 @@ impl SoarScript {
                     let attribute_variable = raw_attr
                         .starts_with('<')
                         .then(|| raw_attr.to_string());
-                    let attr = raw_attr.rsplit('.').next().unwrap_or(raw_attr).to_string();
-                    let val_str = tokens[1].trim_end_matches(')').trim_start_matches('=');
+                    let attr = raw_attr.to_string();
+                    let (relation, value_index) = if tokens.len() >= 3 {
+                        let relation = match tokens[1] {
+                            "=" => SoarRelation::Equal,
+                            "<>" => SoarRelation::NotEqual,
+                            "<" => SoarRelation::Less,
+                            "<=" => SoarRelation::LessOrEqual,
+                            ">" => SoarRelation::Greater,
+                            ">=" => SoarRelation::GreaterOrEqual,
+                            _ => SoarRelation::Equal,
+                        };
+                        (relation, 2)
+                    } else {
+                        (SoarRelation::Equal, 1)
+                    };
+                    let val_str = tokens[value_index]
+                        .trim_end_matches(')')
+                        .trim_start_matches('=');
                     let val_str = val_str.trim_end_matches(['u', 'U']);
                     let value_variable = val_str
                         .starts_with('<')
                         .then(|| val_str.to_string());
-                    let val = match val_str {
-                        "true" => SoarValue::Bool(true),
-                        "false" => SoarValue::Bool(false),
-                        _ => match val_str.parse::<i64>() {
-                        Ok(i) => SoarValue::Int(i),
-                        Err(_) => match val_str.parse::<f32>() {
-                            Ok(f) => SoarValue::Float(f),
-                            Err(_) => SoarValue::Symbol(val_str.to_string()),
-                        },
-                        },
+                    let val = if tokens[1] == "<<" {
+                        let end = tokens
+                            .iter()
+                            .position(|token| *token == ">>")
+                            .unwrap_or(tokens.len());
+                        let alternatives = tokens[2..end]
+                            .iter()
+                            .map(|token| Self::parse_literal_value(token))
+                            .collect();
+                        SoarValue::Disjunction(alternatives)
+                    } else {
+                        Self::parse_literal_value(val_str)
                     };
                     conditions.push(SoarCondition {
                         identifier: identifier.clone(),
@@ -419,6 +477,8 @@ impl SoarScript {
                         attribute_variable,
                         value: val,
                         value_variable,
+                        relation,
+                        negated,
                     });
                 }
             }
@@ -426,6 +486,7 @@ impl SoarScript {
 
         let mut actions = Vec::new();
         let mut wme_actions = Vec::new();
+        let mut rhs_functions = Vec::new();
         let mut op_name = String::from("default");
         let mut op_id = 0u32;
         let mut target_alt = 0.0f32;
@@ -433,6 +494,23 @@ impl SoarScript {
 
         for line in rhs.lines() {
             let line = line.trim();
+            if line.starts_with("(halt") {
+                rhs_functions.push(SoarRhsFunction::Halt);
+                continue;
+            }
+            if line.starts_with("(interrupt") {
+                rhs_functions.push(SoarRhsFunction::Interrupt);
+                continue;
+            }
+            if line.starts_with("(write") {
+                let text = line
+                    .trim_start_matches("(write")
+                    .trim_end_matches(')')
+                    .trim()
+                    .to_string();
+                rhs_functions.push(SoarRhsFunction::Write(text));
+                continue;
+            }
             if line.starts_with('(') && line.contains('^') && !line.contains("operator") {
                 let trimmed = line.trim_end_matches(')');
                 let Some((left, right)) = trimmed.split_once('^') else {
@@ -445,7 +523,14 @@ impl SoarScript {
                 if tokens.len() >= 2 && tokens[0] != "operator" {
                                         let remove = tokens.last().map_or(false, |t| t.starts_with('-'));
                     let value_token = tokens[1].trim_end_matches(|c| c == ')' || c == ',');
-                    let value = if value_token.starts_with('<') {
+                    let value = if let Some(start) = right.find("(+")
+                        .or_else(|| right.find("(-"))
+                        .or_else(|| right.find("(*"))
+                        .or_else(|| right.find("(/"))
+                    {
+                        let end = right.rfind(')').unwrap_or(right.len() - 1);
+                        Self::parse_arithmetic_value(&right[start..=end])
+                    } else if value_token.starts_with('<') {
                         SoarValue::Symbol(value_token.to_string())
                     } else if value_token == "true" {
                         SoarValue::Bool(true)
@@ -556,6 +641,29 @@ impl SoarScript {
             conditions,
             actions,
             wme_actions,
+            rhs_functions,
         })
+    }
+
+    fn parse_literal_value(value: &str) -> SoarValue {
+        match value {
+            "true" => SoarValue::Bool(true),
+            "false" => SoarValue::Bool(false),
+            _ => match value.parse::<i64>() {
+                Ok(value) => SoarValue::Int(value),
+                Err(_) => match value.parse::<f32>() {
+                    Ok(value) => SoarValue::Float(value),
+                    Err(_) => SoarValue::Symbol(value.to_string()),
+                },
+            },
+        }
+    }
+
+    fn parse_arithmetic_value(expression: &str) -> SoarValue {
+        let content = expression.trim().trim_start_matches('(').trim_end_matches(')');
+        let mut tokens = content.split_whitespace();
+        let operator = tokens.next().and_then(|token| token.chars().next()).unwrap_or('+');
+        let operands = tokens.map(Self::parse_literal_value).collect();
+        SoarValue::Arithmetic { operator, operands }
     }
 }

@@ -2,7 +2,7 @@
 
 Rusty-Soar is a memory-safe, zero-GC Rust implementation of the [Soar cognitive architecture](https://soar.eecs.umich.edu/). It is designed for symbolic decision-making in embedded and safety-critical autonomous systems, with a `#![no_std]` core, deterministic data structures, and a bridge for checking Rust agent behavior against AADL/AGREE contracts.
 
-The repository is under active development. The current implementation includes a working Rete-style production engine, working and semantic memory, preference resolution, impasse handling, episodic memory, chunking, reinforcement learning, a Soar rule parser, and contract-driven flight-control examples.
+The repository is under active development. The current implementation includes a deterministic Rete-style production engine, active instantiation identity, TMS-backed i/o-support, preference resolution, selected-operator WMEs, flat negation, relational and disjunctive conditions, dotted attribute paths, episodic/semantic memory, chunking, reinforcement learning, typed basic RHS functions, a Soar rule parser, and contract-driven flight-control examples. Full upstream Soar compatibility remains a staged roadmap.
 
 ![Rusty-Soar safety and certification motivation](TriangleOfDispair.svg)
 
@@ -77,6 +77,10 @@ cargo kani -p formal-soar-verify
 ```
 
 The runtime AADL bridge tests and dynamic contract checks are part of the normal workspace test suite.
+
+## Compatibility Scope
+
+The core is designed for deterministic, memory-safe execution rather than bit-for-bit reproduction of upstream random selection or host-dependent behavior. Supported rule features include variable-bound WME actions, flat negated conditions, relational predicates, disjunctive values, dotted attribute paths, architectural impasse fields, bounded GDS regeneration, operator preferences, deterministic top-down activation ordering, and basic `halt`, `interrupt`, `write`, and constant arithmetic RHS actions. Variable-bound arithmetic, full negated conjunctions, structured values, output-link I/O, complete nested waterfall processing, and full Soar memory/RL compatibility remain in progress.
 
 ## Project Layout
 
