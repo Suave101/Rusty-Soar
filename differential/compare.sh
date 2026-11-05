@@ -45,10 +45,11 @@ trap 'rm -rf "$work"' EXIT
 # Keeps the trace and write output: drops colour codes, trailing blanks, empty lines, the
 # initial `0: ==>S: S1` line (upstream prints it when the agent is created, possibly before
 # its output reaches the CLI) with any `*` (one per rule) and `@` (one per `smem --add`
-# memory) markers loading prints, and upstream's sourcing and halt messages.
+# memory) markers loading prints, and upstream's start-up banner, sourcing, halt and run
+# summary messages.
 normalize() {
     sed -e 's/\x1b\[[0-9;]*m//g' -e 's/[[:space:]]*$//' |
-        grep -vE '^$|^[[:space:]]*0: ==>S: S1( *[*@]+)?$|^Sourcing |^[*@]+$|^Total: |^Source finished|^This Agent halted\.$|^An agent halted|^Interrupt received\.$' ||
+        grep -vE '^$|^[[:space:]]*0: ==>S: S1( *[*@]+)?$|^Sourcing |^[*@]+$|^Total: |^Source finished|^This Agent halted\.$|^An agent halted|^Interrupt received\.|^System halted\.$|^Soar Command Line Interface|^Launching the Soar|^\.\.\.created |^Soar CLI in single agent mode|^Random number generator seed set|^---> [0-9]+ decision cycles executed' ||
         true
 }
 
