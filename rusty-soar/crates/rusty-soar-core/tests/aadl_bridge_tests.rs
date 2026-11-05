@@ -103,7 +103,7 @@ fn test_agree_comparisons_and_boolean_operators() {
 
 #[test]
 fn test_checked_in_aadl_contract_parses_and_verifies() {
-    let source = include_str!("../../../../aadl/RustySoarAgent.aadl");
+    let source = include_str!("../../../../e2e_tests/contract.aadl");
     let contract = AgreeAnnex::parse_aadl_file(source).expect("AADL contract should parse");
     for assumption in &contract.assumes {
         AgreeAnnex::eval_expr(&assumption.expr, &FullContractEnvironment)

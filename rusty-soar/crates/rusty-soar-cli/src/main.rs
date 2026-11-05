@@ -6,7 +6,8 @@ use std::process::{exit, Command};
 use rusty_soar_core::aadl_bridge::{
     AgreeAnnex, AgreeVal, FlightTelemetryFFI, SoarCommandFFI, SymbolEnvironment,
 };
-use rusty_soar_core::soar_condition_matches;
+use rusty_soar_core::agent::{InputRecording, InputReplay, SoarAgent};
+use rusty_soar_core::evaluate_script;
 use rusty_soar_core::soar_parser::SoarScript;
 
 /// Recognized compilation target triples
@@ -56,6 +57,7 @@ fn print_usage() {
     println!("Rusty-Soar Verification & Cross-Compilation CLI");
     println!("Usage:");
     println!("  soar-cli <rules.soar> <contract.aadl> [--target <target_triple>]");
+    println!("  soar-cli trace <agent.soar> [--seed <n>] [--decisions <n>] [--input <recording>]");
     println!("\nOptions:");
     println!("  -t, --target <triple>   Compilation target (default: host machine target)");
     println!("  -h, --help              Show usage information");
@@ -135,11 +137,14 @@ fn load_soar_file(path: &Path, stack: &mut Vec<PathBuf>) -> Result<String, Strin
 
     for line in source.lines() {
         let trimmed = line.trim();
-        if let Some(source_name) = trimmed
-            .strip_prefix("source")
-            .and_then(|value| value.trim().strip_prefix('"'))
-            .and_then(|value| value.strip_suffix('"'))
-        {
+        // `source file`, `source "file"` or `source {file}`, as upstream's CLI accepts.
+        if let Some(source_name) = trimmed.strip_prefix("source ").map(str::trim).map(|value| {
+            value
+                .strip_prefix('"')
+                .and_then(|v| v.strip_suffix('"'))
+                .or_else(|| value.strip_prefix('{').and_then(|v| v.strip_suffix('}')))
+                .unwrap_or(value)
+        }) {
             let source_path = parent.join(source_name);
             expanded.push_str(&load_soar_file(&source_path, stack)?);
             expanded.push('\n');
@@ -153,8 +158,75 @@ fn load_soar_file(path: &Path, stack: &mut Vec<PathBuf>) -> Result<String, Strin
     Ok(expanded)
 }
 
+/// `soar-cli trace`: runs an agent as upstream `soar -n -s <agent.soar> "srand <n>" "run <n>"`
+/// would, printing the default (`watch 1`) decision trace and `write` output. Its output is
+/// compared against upstream's by `scripts/differential/compare.sh`.
+fn run_trace(args: &[String]) {
+    let Some(agent_path) = args.first() else {
+        print_usage();
+        exit(1);
+    };
+    let mut seed = 0u32;
+    let mut decisions = None;
+    let mut input = None;
+    let mut i = 1;
+    while i < args.len() {
+        let value = args.get(i + 1);
+        match (args[i].as_str(), value) {
+            ("--seed", Some(v)) => seed = v.parse().unwrap_or_else(|_| exit_with(&format!("Invalid seed: {}", v))),
+            ("--decisions", Some(v)) => {
+                decisions = Some(v.parse().unwrap_or_else(|_| exit_with(&format!("Invalid decision count: {}", v))))
+            }
+            ("--input", Some(v)) => {
+                let text = fs::read_to_string(v).unwrap_or_else(|e| exit_with(&format!("Failed to read input recording {}: {}", v, e)));
+                let recording = InputRecording::parse(&text).unwrap_or_else(|e| exit_with(&format!("Input recording {}: {}", v, e)));
+                input = Some(InputReplay::new(recording));
+            }
+            (other, _) => exit_with(&format!("Unknown trace option: {}", other)),
+        }
+        i += 2;
+    }
+
+    let source = load_soar_file(Path::new(agent_path), &mut Vec::new()).unwrap_or_else(|e| exit_with(&e));
+    let script = SoarScript::parse(&source).unwrap_or_else(|e| exit_with(&format!("Parse Error in Soar Script: {}", e)));
+
+    let mut agent = SoarAgent::new();
+    agent.exploration.rng.seed(seed);
+    agent.trace_decisions = true;
+    let (state, _) = agent.create_top_state();
+    if let Err(e) = agent.install_soar_script(&script, state) {
+        exit_with(&format!("Error in Soar Script: {}", e));
+    }
+    // With a recording, one decision per recorded decision unless told otherwise.
+    let decisions = decisions.unwrap_or_else(|| input.as_ref().map_or(10, InputReplay::len));
+    for _ in 0..decisions {
+        if let Some(replay) = &mut input {
+            if let Err(e) = replay.apply_next(&mut agent) {
+                exit_with(&format!("Input recording: {}", e));
+            }
+        }
+        agent.run_decision_cycle(state);
+        print!("{}", agent.output);
+        agent.output.clear();
+        if agent.halted {
+            break;
+        }
+    }
+    println!();
+}
+
+fn exit_with(message: &str) -> ! {
+    eprintln!("{}", message);
+    exit(1);
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
+
+    if args.get(1).map(String::as_str) == Some("trace") {
+        run_trace(&args[2..]);
+        return;
+    }
 
     if args.contains(&"--help".to_string()) || args.contains(&"-h".to_string()) || args.len() < 3 {
         print_usage();
@@ -211,6 +283,17 @@ fn main() {
             prod.name,
             prod.conditions.len()
         );
+        for warning in &prod.warnings {
+            println!("         {}", warning);
+        }
+    }
+
+    // Reject the script if any production fails upstream's validation.
+    let mut check_agent = SoarAgent::new();
+    let (state, _) = check_agent.create_top_state();
+    if let Err(e) = check_agent.install_soar_script(&soar_script, state) {
+        eprintln!("Error in Soar Script: {}", e);
+        exit(1);
     }
 
     // 2. Read & Parse AADL Contract Specification
@@ -256,28 +339,7 @@ fn main() {
     let mut total_passed = 0;
 
     for (name, telemetry) in &scenarios {
-        let mut matched_op_id = 0u32;
-        let mut matched_target_alt = telemetry.altitude_ft;
-
-        for prod in &soar_script.productions {
-            let matches = prod
-                .conditions
-                .iter()
-                .all(|condition| soar_condition_matches(condition, telemetry));
-
-            if matches && !prod.actions.is_empty() {
-                let action = &prod.actions[0];
-                matched_op_id = action.operator_id;
-                matched_target_alt = action.target_altitude_ft;
-                break;
-            }
-        }
-
-        let command = SoarCommandFFI {
-            operator_id: matched_op_id,
-            target_altitude_ft: matched_target_alt,
-            is_valid: telemetry.sensor_valid,
-        };
+        let command = evaluate_script(&soar_script, telemetry);
 
         let env = CliSymbolEnv {
             telemetry,

@@ -1,0 +1,16 @@
+sp {propose*emergency_land
+   (state <s> ^engine_status 2)
+-->
+   (<s> ^operator <o> +)
+   (<o> ^name emergency_land
+        ^operator_id 99)
+}
+
+sp {propose*nominal_cruise
+   (state <s> ^sensor_valid true
+              ^engine_status 1)
+-->
+   (<s> ^operator <o> +)
+   (<o> ^name nominal_cruise
+        ^operator_id 10)
+}

@@ -72,35 +72,24 @@ fn main() {
 
     println!("=== SOAR AUTOMATED SUBSTATE CLEANUP DEMO ===");
 
-    // Cycle 1: Trigger impasse and substate S2 creation
+    // Cycle 1, propose and decide: the tie creates substate S2.
     agent.insert_wme(s1, attr_sensor, val_ambiguous);
-    let d1 = agent.run_decision_cycle(s1);
+    agent.run_elaboration_phase();
+    let d1 = agent.run_decision_phase(s1);
 
     assert!(matches!(d1, DecisionResult::TieImpasse(_)));
     assert_eq!(agent.substates.len(), 1);
     let initial_wm_count = agent.wm.len();
     println!(
-        "Cycle 1: Tie Impasse created substate. Total WMEs: {}",
+        "Cycle 1 decide: Tie Impasse created substate. Total WMEs: {}",
         initial_wm_count
     );
 
-    // Cycle 2: Substate resolves impasse -> S1 selects O1 -> Substate S2 is popped & cleaned up!
-    let d2 = agent.run_decision_cycle(s1);
-
-    match d2 {
-        DecisionResult::Selected(op) => {
-            println!("Cycle 2: Operator {:?} selected!", op);
-            assert_eq!(op, o1_track);
-        }
-        _ => panic!("Expected operator selection on Cycle 2"),
-    }
-
+    // Cycle 1, apply: the substate rule returns a better preference to S1. The consistency
+    // check sees the tie is gone and removes S2 and its WMEs.
+    agent.run_application_phase();
     println!("\nActive Substates Remaining: {}", agent.substates.len());
-    assert_eq!(
-        agent.substates.len(),
-        0,
-        "Substate record list must be empty"
-    );
+    assert_eq!(agent.substates.len(), 0, "Substate record list must be empty");
 
     let final_wm_count = agent.wm.len();
     println!("Working Memory WME count post-cleanup: {}", final_wm_count);
@@ -108,6 +97,16 @@ fn main() {
         final_wm_count < initial_wm_count,
         "Substate WMEs must be purged from Working Memory"
     );
+
+    // Cycle 2: S1 selects O1.
+    let d2 = agent.run_decision_cycle(s1);
+    match d2 {
+        DecisionResult::Selected(op) => {
+            println!("Cycle 2: Operator {:?} selected!", op);
+            assert_eq!(op, o1_track);
+        }
+        _ => panic!("Expected operator selection on Cycle 2"),
+    }
 
     println!("\nSubstate Purging & Impasse Cleanup: VERIFIED SUCCESS!");
 }

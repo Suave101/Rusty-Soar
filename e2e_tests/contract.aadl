@@ -1,0 +1,13 @@
+package FlightSystem
+public
+  system VerificationTarget
+  end VerificationTarget;
+  
+  system implementation VerificationTarget.impl
+    annex agree {**
+      assume "A01_SENSOR": sensor_valid = true;
+      guarantee "G01_EMERGENCY": (engine_status = 2) => (operator_id = 99);
+      guarantee "G02_NOMINAL": (engine_status = 1) => (operator_id = 10);
+    **};
+  end VerificationTarget.impl;
+end FlightSystem;

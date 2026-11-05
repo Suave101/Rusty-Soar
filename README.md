@@ -1,92 +1,61 @@
 # Rusty-Soar
 
-Rusty-Soar is a memory-safe, zero-GC Rust implementation of the [Soar cognitive architecture](https://soar.eecs.umich.edu/). It is designed for symbolic decision-making in embedded and safety-critical autonomous systems, with a `#![no_std]` core, deterministic data structures, and a bridge for checking Rust agent behavior against AADL/AGREE contracts.
+Rusty-Soar is a Rust port of [Soar](https://soar.eecs.umich.edu/), the cognitive architecture from
+the University of Michigan. It has two goals:
 
-The repository is under active development. The current implementation includes a working Rete-style production engine, working and semantic memory, preference resolution, impasse handling, episodic memory, chunking, reinforcement learning, a Soar rule parser, and contract-driven flight-control examples.
+- **Behave exactly like Soar.** It follows the C++ Soar kernel algorithm for algorithm, so research
+  results carry over.
+- **Be provable.** The kernel is safe, `no_std` Rust with fixed-size memory, so that tools like
+  [Kani](https://model-checking.github.io/kani/) can prove properties about agents.
 
 ![Rusty-Soar safety and certification motivation](TriangleOfDispair.svg)
 
-## Workspace
+> [!WARNING]
+> Rusty-Soar is in active development. The core decision cycle, reinforcement learning and most
+> of semantic and episodic memory are ported, with a first version of chunking; the formal proofs
+> are in progress. See [What's Ported](docs/reference/status.md).
 
-The Cargo workspace is in [`rusty-soar/`](rusty-soar/):
+## Quick start
 
-- [`rusty-soar-core`](rusty-soar/crates/rusty-soar-core) - `#![no_std]` Soar engine and public modules for agents, symbols, working memory, Rete matching, preferences, production rules, semantic and episodic memory, learning, reinforcement learning, impasses, TMS, and AADL/AGREE parsing.
-- [`formal-soar-verify`](rusty-soar/crates/formal-soar-verify) - Kani proof harnesses for checking agent behavior against AGREE contracts.
-- [`rusty-soar-cli`](rusty-soar/crates/rusty-soar-cli) - command-line verification and cross-compilation workflow for Soar rules and AADL contracts.
-
-The repository also contains AADL specifications in [`aadl/`](aadl/) and sample Soar rules in [`rusty-soar/crates/rusty-soar-core/rules/`](rusty-soar/crates/rusty-soar-core/rules/).
-
-## Requirements
-
-- Rust stable and Cargo
-- `rustup` for installing additional compilation targets
-- Kani, only when running the formal proof harness
-
-The core crate supplies fallback rules during a normal Cargo build. A custom rules file can be injected with the `SOAR_RULES_FILE` environment variable.
-
-## Quick Start
-
-From the workspace directory:
+You need [Rust](https://rustup.rs/). Then:
 
 ```bash
-cd rusty-soar
+git clone https://github.com/Suave101/Rusty-Soar.git
+cd Rusty-Soar/rusty-soar
 cargo test --workspace
-cargo run --example full_mvp -p rusty-soar-core
+cargo run -p rusty-soar-cli -- trace ../differential/agents/count.soar
 ```
 
-Run the other focused engine demonstrations with:
+The last command runs a small agent that counts to five and prints its decisions in the same
+format as C++ Soar.
+
+## Documentation
+
+The full documentation is in [`docs/`](docs/index.md), and builds into a website with MkDocs:
+
+| Start here | |
+|---|---|
+| [Getting Started](docs/getting-started/index.md) | Install, run an agent, and connect one to your program |
+| [Soar in Ten Minutes](docs/guides/soar-basics.md) | The ideas behind Soar, for newcomers |
+| [What's Ported](docs/reference/status.md) | What works today and what doesn't yet |
+| [Differences from C++ Soar](docs/reference/differences.md) | Every known difference, and why |
+
+To read it as a website locally:
 
 ```bash
-cargo run --example rete_demo -p rusty-soar-core
-cargo run --example preference_demo -p rusty-soar-core
-cargo run --example smem_demo -p rusty-soar-core
-cargo run --example epmem_demo -p rusty-soar-core
-cargo run --example chunking_demo -p rusty-soar-core
-cargo run --example rl_demo -p rusty-soar-core
-cargo run --example tms_demo -p rusty-soar-core
+pip install -r docs/requirements.txt
+mkdocs serve
 ```
 
-## Verify Rules Against AADL
+## Repository layout
 
-The CLI parses a Soar production file, parses an AADL/AGREE contract, evaluates nominal and emergency flight scenarios, and then builds `rusty-soar-core` for the selected target:
-
-```bash
-cd rusty-soar
-cargo run -p rusty-soar-cli -- \
-	crates/rusty-soar-core/rules/flight_control.soar \
-	test/specs/flight_control.aadl
-```
-
-Cross-compile by adding a target triple:
-
-```bash
-cargo run -p rusty-soar-cli -- \
-	crates/rusty-soar-core/rules/flight_control.soar \
-	test/specs/flight_control.aadl \
-	--target x86_64-unknown-linux-gnu
-```
-
-Use `cargo run -p rusty-soar-cli -- --help` to list the target triples recognized by the CLI. Targets that need nightly Rust or `build-std` may require the fallback command printed by the CLI.
-
-## Formal Verification
-
-The `formal-soar-verify` crate contains a Kani proof that assumes valid sensor input and checks the current flight-control guarantees, including command validity and the emergency operator selection. Run it with Kani from [`rusty-soar/`](rusty-soar/):
-
-```bash
-cargo kani -p formal-soar-verify
-```
-
-The runtime AADL bridge tests and dynamic contract checks are part of the normal workspace test suite.
-
-## Project Layout
-
-```text
-aadl/                         AADL/AGREE system and contract specifications
-rusty-soar/
-	crates/rusty-soar-core/     Core engine, rules, examples, and integration tests
-	crates/formal-soar-verify/  Kani verification harness
-	crates/rusty-soar-cli/      Verification and cross-compilation CLI
-```
+| Folder | What it holds |
+|---|---|
+| `rusty-soar/crates/rusty-soar-core` | The Soar kernel, as a `no_std` Rust library |
+| `rusty-soar/crates/rusty-soar-cli` | Command-line tool for running agents |
+| `rusty-soar/crates/formal-soar-verify` | Kani proof harnesses |
+| `differential/` | Tools and test agents for comparing Rusty-Soar with C++ Soar |
+| `docs/` | Documentation |
 
 ## License
 
@@ -94,4 +63,3 @@ Licensed under either of:
 
 - [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)
 - [MIT License](https://opensource.org/licenses/MIT)
-

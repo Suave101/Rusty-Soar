@@ -1,0 +1,30 @@
+# Two operators that are each better than the other (a conflict impasse), and a state whose
+# operator has two require preferences (a constraint-failure impasse) one level down.
+
+sp {propose*x
+   (state <s> ^superstate nil)
+-->
+   (<s> ^operator <o> +)
+   (<o> ^name x)}
+
+sp {propose*y
+   (state <s> ^superstate nil)
+-->
+   (<s> ^operator <o> +)
+   (<o> ^name y)}
+
+sp {prefer*x
+   (state <s> ^operator <x> + ^operator <y> +)
+   (<x> ^name x)
+   (<y> ^name y)
+-->
+   (<s> ^operator <x> > <y>)
+   (<s> ^operator <y> > <x>)}
+
+sp {conflict*require-two
+   (state <s> ^impasse conflict)
+-->
+   (<s> ^operator <p> !)
+   (<s> ^operator <q> !)
+   (<p> ^name p)
+   (<q> ^name q)}

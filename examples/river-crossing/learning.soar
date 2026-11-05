@@ -1,0 +1,39 @@
+##!
+# Rewards and the learned values.
+
+### Rewards: each crossing costs 1, getting everyone across earns 10. Waiting is free.
+
+sp {reward*crossing
+    (state <s> ^reward-link <rl> ^last cross)
+-->
+    (<rl> ^reward <r>)
+    (<r> ^value -1)
+}
+
+sp {reward*solved
+    (state <s> ^reward-link <rl> ^solved yes)
+-->
+    (<rl> ^reward <r>)
+    (<r> ^value 10)
+}
+
+### One value for each move and for waiting, for each left bank (the key) and boat side.
+
+proc generateMoveValues { keys } {
+    foreach key $keys {
+        sp "rl*${key}*left*m1  (state <s> ^key ${key} ^boat left ^operator <o> +) (<o> ^move m1) --> (<s> ^operator <o> = 0)"
+        sp "rl*${key}*left*m2  (state <s> ^key ${key} ^boat left ^operator <o> +) (<o> ^move m2) --> (<s> ^operator <o> = 0)"
+        sp "rl*${key}*left*c1  (state <s> ^key ${key} ^boat left ^operator <o> +) (<o> ^move c1) --> (<s> ^operator <o> = 0)"
+        sp "rl*${key}*left*c2  (state <s> ^key ${key} ^boat left ^operator <o> +) (<o> ^move c2) --> (<s> ^operator <o> = 0)"
+        sp "rl*${key}*left*mc  (state <s> ^key ${key} ^boat left ^operator <o> +) (<o> ^move mc) --> (<s> ^operator <o> = 0)"
+        sp "rl*${key}*left*wait  (state <s> ^key ${key} ^boat left ^operator <o> +) (<o> ^name wait) --> (<s> ^operator <o> = 0)"
+        sp "rl*${key}*right*m1 (state <s> ^key ${key} ^boat right ^operator <o> +) (<o> ^move m1) --> (<s> ^operator <o> = 0)"
+        sp "rl*${key}*right*m2 (state <s> ^key ${key} ^boat right ^operator <o> +) (<o> ^move m2) --> (<s> ^operator <o> = 0)"
+        sp "rl*${key}*right*c1 (state <s> ^key ${key} ^boat right ^operator <o> +) (<o> ^move c1) --> (<s> ^operator <o> = 0)"
+        sp "rl*${key}*right*c2 (state <s> ^key ${key} ^boat right ^operator <o> +) (<o> ^move c2) --> (<s> ^operator <o> = 0)"
+        sp "rl*${key}*right*mc (state <s> ^key ${key} ^boat right ^operator <o> +) (<o> ^move mc) --> (<s> ^operator <o> = 0)"
+        sp "rl*${key}*right*wait (state <s> ^key ${key} ^boat right ^operator <o> +) (<o> ^name wait) --> (<s> ^operator <o> = 0)"
+    }
+}
+# 10 * missionaries + cannibals on the left bank
+generateMoveValues { 0 1 2 3 10 11 12 13 20 21 22 23 30 31 32 33 }

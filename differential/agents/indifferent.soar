@@ -1,0 +1,31 @@
+# Three mutually indifferent operators proposed afresh each round. Which one is selected
+# depends on the random seed and the softmax policy, so this checks exploration and the RNG.
+
+sp {propose*init
+   (state <s> ^superstate nil -^round)
+-->
+   (<s> ^operator <o> +)
+   (<o> ^name init)}
+
+sp {apply*init
+   (state <s> ^operator.name init)
+-->
+   (<s> ^round 0)}
+
+sp {elaborate*choices
+   (state <s> ^superstate nil)
+-->
+   (<s> ^choice red green blue)}
+
+sp {propose*pick
+   (state <s> ^superstate nil ^choice <c> ^round <r>)
+-->
+   (<s> ^operator <o> + =)
+   (<o> ^name <c>)}
+
+sp {apply*pick
+   (state <s> ^operator <o> ^round <r>)
+   (<o> ^name { <c> <> init })
+-->
+   (<s> ^round <r> - ^round (+ <r> 1))
+   (write (crlf) |round | <r> |: | <c>)}

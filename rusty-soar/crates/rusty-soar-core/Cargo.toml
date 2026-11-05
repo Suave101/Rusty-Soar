@@ -1,6 +1,6 @@
 [package]
 name = "rusty-soar-core"
-version = "1.0.0"
+version = "2.0.0-beta.2"
 edition = "2021"
 description = "Core Soar cognitive architecture engine with formal verification and AADL contract bridging."
 license = "MIT OR Apache-2.0"
@@ -12,4 +12,5 @@ build = "build.rs"
 [dependencies]
 hashbrown = { workspace = true }
 heapless = "0.9.3"
+libm = "0.2"
 slotmap = { workspace = true }

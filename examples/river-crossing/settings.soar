@@ -1,0 +1,10 @@
+##!
+# Learning settings. The recording changes some of these between decisions, as an environment
+# would.
+
+rl --set learning on
+# A trip ends when everyone is across. Without temporal extension, the last crossing's value
+# comes from its reward alone and doesn't reach into the next trip.
+rl --set temporal-extension off
+decide indifferent-selection --epsilon-greedy
+decide indifferent-selection --epsilon 0.1

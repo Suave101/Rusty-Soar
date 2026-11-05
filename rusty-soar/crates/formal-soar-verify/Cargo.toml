@@ -1,6 +1,6 @@
 [package]
 name = "formal-soar-verify"
-version = "1.0.0"
+version = "2.0.0-beta.2"
 edition = "2021"
 description = "Formal verification harnesses and Kani proofs for Rusty-Soar agents and AADL AGREE contracts."
 license = "MIT OR Apache-2.0"
@@ -9,7 +9,13 @@ documentation = "https://docs.rs/formal-soar-verify"
 readme = "../../README.md"
 
 [dependencies]
-rusty-soar-core = { path = "../rusty-soar-core", version = "1.0.0" }
+rusty-soar-core = { path = "../rusty-soar-core", version = "2.0.0-beta.2" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+# CBMC tracks heap arrays element by element only up to this many elements (default 64). The
+# Rete's fixed-capacity pools are larger, and beyond the limit CBMC loses the link fields stored
+# in them, so it cannot bound the loops that follow those links.
+[package.metadata.kani]
+flags = { cbmc-args = ["--max-field-sensitivity-array-size", "4096"] }
+unstable = { unstable-options = true, stubbing = true }

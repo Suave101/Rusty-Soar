@@ -1,0 +1,34 @@
+# From upstream Soar (UnitTests/SoarTestAgents/FullTests/test1121.soar),
+# BSD license (see LICENSE.md in the Soar repository).
+#
+sp {a
+   (state <s> ^superstate nil)
+-->
+   (<s> ^anything <o1>   
+        ^anything <o2>)
+}
+
+sp {b
+   (state <s> ^superstate nil
+              ^anything <any>)
+-->
+   (<s> ^operator <o> +)
+   (<o> ^name foo
+        ^thing <any>)
+}
+
+sp {c
+:template
+   (state <s> ^operator <o> +
+              ^anything <a>)
+   (<o> ^thing <any>)
+-->           
+   (<s> ^operator <o> = 0)
+}
+
+sp {done
+   (state <s> ^operator.name foo)
+-->
+   (halt)
+}
+

@@ -1,0 +1,200 @@
+##!
+# The puzzle: the banks, the moves, crossing, waiting and starting over.
+
+### Setup
+
+sp {propose*initialize
+    (state <s> ^superstate nil -^name)
+-->
+    (<s> ^operator <o> + =)
+    (<o> ^name initialize)
+}
+
+sp {apply*initialize
+    (state <s> ^operator.name initialize)
+-->
+    (<s> ^name river-crossing ^bank <l> <r> ^boat left ^trip 1 ^crossings 0 ^waits 0 ^moves <mv>)
+    (<l> ^side left ^m 3 ^c 3)
+    (<r> ^side right ^m 0 ^c 0)
+    (<mv> ^move <m1> <m2> <c1> <c2> <mc>)
+    (<m1> ^name m1 ^m 1 ^c 0 ^size 1)
+    (<m2> ^name m2 ^m 2 ^c 0 ^size 2)
+    (<c1> ^name c1 ^m 0 ^c 1 ^size 1)
+    (<c2> ^name c2 ^m 0 ^c 2 ^size 2)
+    (<mc> ^name mc ^m 1 ^c 1 ^size 2)
+}
+
+### The river, from the input link
+
+sp {elaborate*capacity*calm
+    (state <s> ^name river-crossing ^io.input-link.river.current calm)
+-->
+    (<s> ^capacity 2)
+}
+
+sp {elaborate*capacity*strong
+    (state <s> ^name river-crossing ^io.input-link.river.current strong)
+-->
+    (<s> ^capacity 1)
+}
+
+sp {elaborate*solved
+    (state <s> ^name river-crossing ^bank <b>)
+    (<b> ^side right ^m 3 ^c 3)
+-->
+    (<s> ^solved yes)
+}
+
+# The left bank as one number, 10 * missionaries + cannibals, for the learned values.
+sp {elaborate*key
+    (state <s> ^name river-crossing ^bank <b>)
+    (<b> ^side left ^m <m> ^c <c>)
+-->
+    (<s> ^key (+ (* 10 <m>) <c>))
+}
+
+### Crossing
+
+sp {propose*cross
+    (state <s> ^name river-crossing -^solved ^capacity <cap> ^boat <side> ^bank <from> ^moves.move <mv>)
+   -(<s> ^io.input-link.river.storm yes)
+    (<from> ^side <side> ^m <fm> ^c <fc>)
+    (<mv> ^name <name> ^m { <dm> <= <fm> } ^c { <dc> <= <fc> } ^size <= <cap>)
+-->
+    (<s> ^operator <o> +)
+    (<o> ^name cross ^move <name> ^from <side> ^m <dm> ^c <dc>)
+}
+
+# What the banks would hold after the crossing.
+sp {elaborate*cross*result
+    (state <s> ^name river-crossing ^operator <o> + ^bank <from> { <> <from> <to> })
+    (<o> ^name cross ^from <side> ^m <dm> ^c <dc>)
+    (<from> ^side <side> ^m <fm> ^c <fc>)
+    (<to> ^m <tm> ^c <tc>)
+-->
+    (<o> ^from-m (- <fm> <dm>) ^from-c (- <fc> <dc>) ^to-m (+ <tm> <dm>) ^to-c (+ <tc> <dc>))
+}
+
+sp {reject*cross*outnumbered*from
+    (state <s> ^name river-crossing ^operator <o> +)
+    (<o> ^name cross ^from-m { <m> > 0 } ^from-c > <m>)
+-->
+    (<s> ^operator <o> -)
+}
+
+sp {reject*cross*outnumbered*to
+    (state <s> ^name river-crossing ^operator <o> +)
+    (<o> ^name cross ^to-m { <m> > 0 } ^to-c > <m>)
+-->
+    (<s> ^operator <o> -)
+}
+
+# Each count changes only while the boat is still on the side it left from, so these fire once.
+sp {apply*cross*boat
+    (state <s> ^operator <o> ^boat <side> ^bank <to>)
+    (<o> ^name cross ^from <side>)
+    (<to> ^side { <> <side> <other> })
+-->
+    (<s> ^boat <side> - ^boat <other>)
+}
+
+sp {apply*cross*from-m
+    (state <s> ^operator <o> ^boat <side> ^bank <from>)
+    (<o> ^name cross ^from <side> ^m > 0 ^from-m <new>)
+    (<from> ^side <side> ^m <old>)
+-->
+    (<from> ^m <old> - ^m <new>)
+}
+
+sp {apply*cross*from-c
+    (state <s> ^operator <o> ^boat <side> ^bank <from>)
+    (<o> ^name cross ^from <side> ^c > 0 ^from-c <new>)
+    (<from> ^side <side> ^c <old>)
+-->
+    (<from> ^c <old> - ^c <new>)
+}
+
+sp {apply*cross*to-m
+    (state <s> ^operator <o> ^boat <side> ^bank <to>)
+    (<o> ^name cross ^from <side> ^m > 0 ^to-m <new>)
+    (<to> ^side <> <side> ^m <old>)
+-->
+    (<to> ^m <old> - ^m <new>)
+}
+
+sp {apply*cross*to-c
+    (state <s> ^operator <o> ^boat <side> ^bank <to>)
+    (<o> ^name cross ^from <side> ^c > 0 ^to-c <new>)
+    (<to> ^side <> <side> ^c <old>)
+-->
+    (<to> ^c <old> - ^c <new>)
+}
+
+sp {apply*cross*count
+    (state <s> ^operator <o> ^boat <side> ^crossings <n>)
+    (<o> ^name cross ^from <side>)
+-->
+    (<s> ^crossings <n> - ^crossings (+ <n> 1) ^last cross)
+}
+
+### Waiting: the only choice in a storm, and a choice in a strong current. One wait lasts until
+### the river's clock ticks, so a wait proposed at one time applies once.
+
+sp {propose*wait*storm
+    (state <s> ^name river-crossing -^solved ^io.input-link.river <river>)
+    (<river> ^storm yes ^time <t>)
+-->
+    (<s> ^operator <o> +)
+    (<o> ^name wait ^time <t>)
+}
+
+sp {propose*wait*current
+    (state <s> ^name river-crossing -^solved ^io.input-link.river <river>)
+    (<river> ^current strong ^time <t>)
+-->
+    (<s> ^operator <o> +)
+    (<o> ^name wait ^time <t>)
+}
+
+sp {apply*wait
+    (state <s> ^operator <o> ^waits <n>)
+    (<o> ^name wait ^time <t>)
+   -(<s> ^waited-at <t>)
+-->
+    (<s> ^waits <n> - ^waits (+ <n> 1) ^waited-at <t> ^last wait)
+}
+
+sp {apply*wait*forget
+    (state <s> ^operator <o> ^waited-at { <old> <> <t> })
+    (<o> ^name wait ^time <t>)
+-->
+    (<s> ^waited-at <old> -)
+}
+
+### Everyone is across: report the trip and start over
+
+sp {propose*new-trip
+    (state <s> ^name river-crossing ^solved yes)
+-->
+    (<s> ^operator <o> +)
+    (<o> ^name new-trip)
+}
+
+sp {apply*new-trip
+    (state <s> ^operator.name new-trip ^trip <t> ^crossings <n> ^waits <w> ^boat right ^bank <l> <r>)
+    (<l> ^side left)
+    (<r> ^side right)
+-->
+    (write (crlf) |trip | <t> |: | <n> | crossings, | <w> | waits|)
+    (<s> ^trip <t> - ^trip (+ <t> 1) ^crossings <n> - ^crossings 0 ^waits <w> - ^waits 0)
+    (<s> ^boat right - ^boat left ^last new-trip)
+    (<l> ^m 0 - ^m 3 ^c 0 - ^c 3)
+    (<r> ^m 3 - ^m 0 ^c 3 - ^c 0)
+}
+
+sp {apply*forget-last
+    (state <s> ^operator <o> ^last { <old> <> <kind> })
+    (<o> ^name <kind>)
+-->
+    (<s> ^last <old> -)
+}

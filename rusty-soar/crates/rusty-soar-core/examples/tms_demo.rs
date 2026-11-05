@@ -64,11 +64,12 @@ fn main() {
         3,
         "Expected root WME + 2 derived elaboration WMEs"
     );
-    assert_eq!(agent.tms.active_justifications_count(), 2);
 
-    // Step 3: Retract root WME (light = green) -> Cascading TMS retraction should remove all derived WMEs
+    // Step 3: Retract root WME (light = green). The rule matches retract, taking their
+    // i-supported preferences and so their WMEs with them, over the next elaboration cycles.
     println!("\nRetracting root WME (light = green)...");
     agent.remove_wme(root_wme_key);
+    agent.run_elaboration_phase();
 
     println!("Post-retraction WME count: {}", agent.wm.len());
     assert_eq!(
