@@ -12,7 +12,13 @@ rusty-soar/Cargo.lock
 .DS_Store
 .env
 *.env
+.venv/
+
 
 AGENTS.md
 # MkDocs build output
 site/
+
+# CCat & Soar
+Soar/
+CCAT_Xplane-QGC/

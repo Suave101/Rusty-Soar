@@ -111,8 +111,8 @@ program, while keeping the same algorithm:
 | Matching a single condition, WME present or not | Verifies in about a minute |
 | Matching a negated condition: every combination of adding and removing the WMEs | Verifies in about 6 minutes, path by path |
 | A decision cycle: one rule proposes an operator, which is selected | Verifies in about 6 minutes |
-| A decision cycle: two rules propose indifferent operators, either or both WMEs present; any random choice selects a proposed operator | Written; verification running |
-| A decision cycle: one rule's WME present or not; it is selected, or a state no-change impasse creates a substate | Written; verification pending |
+| A decision cycle: two rules propose indifferent operators, either or both WMEs present; any random choice selects a proposed operator | Written; runs out of memory on an 8 GB machine (CBMC needs more than 7 GB) |
+| A decision cycle: one rule's WME present or not; it is selected, or a state no-change impasse creates a substate | Written; runs out of memory on an 8 GB machine (CBMC needs more than 7 GB) |
 | An agent against an AGREE contract | Not started |
 
 The Rete proofs use symbols made directly (`SymbolId(0)`, `SymbolId(1)`, ...) because the Rete
