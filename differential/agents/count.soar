@@ -1,0 +1,38 @@
+# Counts to 5 with an o-supported counter, then halts. Exercises operator application,
+# o-support, arithmetic and write output (including float formatting).
+
+sp {propose*init
+   (state <s> ^superstate nil -^count)
+-->
+   (<s> ^operator <o> +)
+   (<o> ^name init)}
+
+sp {apply*init
+   (state <s> ^operator.name init)
+-->
+   (<s> ^count 0)}
+
+sp {propose*count
+   (state <s> ^count { <c> < 5 })
+-->
+   (<s> ^operator <o> + =)
+   (<o> ^name count ^value <c>)}
+
+sp {apply*count
+   (state <s> ^operator <o> ^count <c>)
+   (<o> ^name count)
+-->
+   (<s> ^count <c> - ^count (+ <c> 1))
+   (write (crlf) |count | (+ <c> 1))}
+
+sp {propose*done
+   (state <s> ^count 5)
+-->
+   (<s> ^operator <o> +)
+   (<o> ^name done)}
+
+sp {apply*done
+   (state <s> ^operator.name done)
+-->
+   (write (crlf) |done | (/ 7 2.0) | | (* 3 0.5))
+   (halt)}

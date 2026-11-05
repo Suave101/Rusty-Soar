@@ -1,0 +1,82 @@
+site_name: Rusty-Soar
+site_description: A Rust port of the Soar cognitive architecture, built to match Soar exactly and to be formally verifiable.
+repo_url: https://github.com/Suave101/Rusty-Soar
+repo_name: Suave101/Rusty-Soar
+edit_uri: edit/main/docs/
+docs_dir: docs
+strict: true
+exclude_docs: |
+  requirements.txt
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.indexes
+    - navigation.footer
+    - navigation.top
+    - navigation.tracking
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep orange
+      accent: amber
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep orange
+      accent: amber
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - getting-started/index.md
+      - 1. Install: getting-started/install.md
+      - 2. Run Your First Agent: getting-started/first-agent.md
+      - 3. Put an Agent in Your Program: getting-started/rust-agent.md
+      - 4. Inputs and Outputs: getting-started/inputs-outputs.md
+      - 5. Where to Go Next: getting-started/next-steps.md
+  - Guides:
+      - Soar in Ten Minutes: guides/soar-basics.md
+      - Writing Rules: guides/writing-rules.md
+      - Inputs and Outputs: guides/input-output.md
+      - Reinforcement Learning: guides/reinforcement-learning.md
+      - Comparing with C++ Soar: guides/comparing-with-soar.md
+      - Formal Verification: guides/formal-verification.md
+  - Reference:
+      - Command-Line Tool: reference/cli.md
+      - Script Commands: reference/script-commands.md
+      - RL Settings: reference/rl-settings.md
+      - RHS Functions: reference/rhs-functions.md
+      - What's Ported: reference/status.md
+      - Differences from C++ Soar: reference/differences.md
+      - Glossary: reference/glossary.md

@@ -2,24 +2,26 @@
 
 use crate::symbol::SymbolId;
 
-/// Specific category of architectural impasse encountered during the decision phase.
+/// Kind of impasse (upstream `*_IMPASSE_TYPE`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImpasseType {
-    /// Multiple candidate operators exist with no distinguishing preferences.
+    /// Several candidates that are not all mutually indifferent.
     Tie,
-    /// Conflicting preference assertions prevent deterministic selection.
+    /// Better/worse preferences conflict.
     Conflict,
-    /// No acceptable candidate operators were proposed for the state.
+    /// Several requires, or a require that is also prohibited.
+    ConstraintFailure,
+    /// No candidate (state no-change), or no progress after a selection (operator no-change).
     NoChange,
 }
 
-/// Record representing an active architectural substate created to resolve an impasse.
+/// A substate on the goal stack.
 #[derive(Debug, Clone)]
 pub struct SubstateRecord {
-    /// Symbol ID of the newly generated substate (e.g., `S2`).
+    /// The substate (e.g. `S2`).
     pub substate_id: SymbolId,
-    /// Parent state symbol ID (e.g., `S1`).
+    /// Its superstate (e.g. `S1`).
     pub superstate_id: SymbolId,
-    /// Reason for substate creation.
+    /// Why it was created.
     pub impasse_type: ImpasseType,
 }

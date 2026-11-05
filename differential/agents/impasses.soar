@@ -1,0 +1,32 @@
+# A tie impasse resolved from its substate, then an operator no-change, then state no-change
+# impasses stacking below it.
+
+sp {propose*a
+   (state <s> ^superstate nil -^done)
+-->
+   (<s> ^operator <o> +)
+   (<o> ^name a)}
+
+sp {propose*b
+   (state <s> ^superstate nil -^done)
+-->
+   (<s> ^operator <o> +)
+   (<o> ^name b)}
+
+sp {tie*prefer-b
+   (state <s> ^impasse tie ^superstate <ss> ^item <o>)
+   (<o> ^name b)
+-->
+   (<ss> ^operator <o> >)}
+
+sp {apply*b
+   (state <s> ^operator.name b)
+-->
+   (<s> ^done yes)
+   (write (crlf) |applied b|)}
+
+sp {propose*c
+   (state <s> ^superstate nil ^done yes)
+-->
+   (<s> ^operator <o> +)
+   (<o> ^name c)}

@@ -1,130 +1,484 @@
-//! Architectural preference evaluation and decision procedure.
+//! Preference semantics and exploration, ported from upstream `decide.cpp`
+//! (`run_preference_semantics`) and `exploration.cpp`.
 
-use crate::rl::ReinforcementLearning;
-use crate::symbol::SymbolId;
+use crate::impasse::ImpasseType;
+use crate::soar_rand::MtRand;
+use crate::rl::LearningPolicy;
+use crate::symbol::{SymbolId, SymbolTable};
 use alloc::vec::Vec;
 
-/// Categorical semantics for operator preferences asserted into Working Memory.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Preference types (upstream `PreferenceType`). Binary preferences carry their referent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreferenceType {
-    /// Marks an operator candidate as valid for selection.
+    /// `+`
     Acceptable,
-    /// Prohibits an operator candidate from selection.
+    /// `-`
     Reject,
-    /// Asserts that operator A is preferred over operator B.
+    /// `> referent`
     Better(SymbolId),
-    /// Asserts that operator A is less preferred than operator B.
+    /// `< referent`
     Worse(SymbolId),
+    /// `!`
+    Require,
+    /// `~`
+    Prohibit,
+    /// `>` with no referent
+    Best,
+    /// `<` with no referent
+    Worst,
+    /// `=` with no referent (unary indifferent)
+    Indifferent,
+    /// `= referent` where the referent is another candidate
+    BinaryIndifferent(SymbolId),
+    /// `= number`; the referent is the numeric value
+    NumericIndifferent(SymbolId),
 }
 
-/// Architectural preference entry for an operator candidate within a substate.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A preference for a value in a slot. For operator slots, `state` is the goal and
+/// `operator` the candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Preference {
-    /// State symbol identifier.
+    /// Slot identifier.
     pub state: SymbolId,
-    /// Candidate operator symbol identifier.
+    /// Candidate value.
     pub operator: SymbolId,
-    /// Preference type classification.
+    /// Preference type.
     pub preference_type: PreferenceType,
 }
 
-/// Result of evaluating preferences during the Decision Phase.
+/// Outcome of deciding a slot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecisionResult {
-    /// Unambiguous operator candidate selected for execution.
+    /// One candidate won.
     Selected(SymbolId),
-    /// Impasse triggered by multiple acceptable candidates with identical high Q-values.
+    /// Candidates not all mutually indifferent.
     TieImpasse(Vec<SymbolId>),
-    /// Impasse triggered by conflicting preference assertions.
+    /// Better/worse preferences conflict; the conflicted candidates.
     ConflictImpasse(Vec<SymbolId>),
-    /// Impasse triggered when no acceptable operators are proposed.
+    /// Several requires, or a require with a prohibit; the required candidates.
+    ConstraintFailureImpasse(Vec<SymbolId>),
+    /// Nothing to select (or, after a selection, nothing changed).
     NoChangeImpasse,
+    /// The agent has halted (the `halt` RHS function, or a full memory pool), so no decision
+    /// was made.
+    Halted,
 }
 
-/// Evaluates state preferences without RL integration.
-pub fn resolve_preferences(state_id: SymbolId, preferences: &[Preference]) -> DecisionResult {
-    let dummy_rl = ReinforcementLearning::default();
-    resolve_preferences_with_rl(state_id, preferences, &dummy_rl)
+/// Result of [`run_preference_semantics`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct Semantics {
+    /// `None` when there is no impasse (0 or 1 candidates, or all indifferent).
+    pub impasse: Option<ImpasseType>,
+    /// Remaining candidates, in upstream's candidate-list order.
+    pub candidates: Vec<SymbolId>,
+    /// With learning on, the reinforcement-learning update upstream makes for this decision.
+    pub rl: Option<RlChoice>,
 }
 
-/// Evaluates state preferences using RL Q-values $Q(s, a)$ to break tie impasses dynamically.
-pub fn resolve_preferences_with_rl(
-    state_id: SymbolId,
-    preferences: &[Preference],
-    rl: &ReinforcementLearning,
-) -> DecisionResult {
-    let state_prefs: Vec<&Preference> =
-        preferences.iter().filter(|p| p.state == state_id).collect();
+/// What upstream's reinforcement learning takes from a decision with a winner (outside the
+/// consistency check): the update `rl_perform_update` makes, and the winner's value for
+/// `rl_store_data`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RlChoice {
+    /// Value the update moves toward: the winner's (sarsa) or the best candidate's (q-learning).
+    pub update_value: f64,
+    /// Whether an RL rule contributed to `update_value`.
+    pub update_rl: bool,
+    /// The winner's value (upstream `numeric_value` of the selected candidate).
+    pub selected_value: f64,
+    /// Q-learning chose a candidate that is not the best: clear eligibility traces (Watkins).
+    pub watkins_clear: bool,
+}
 
-    // 1. Extract explicitly rejected operators
-    let rejected: Vec<SymbolId> = state_prefs
-        .iter()
-        .filter(|p| p.preference_type == PreferenceType::Reject)
-        .map(|p| p.operator)
-        .collect();
+/// Exploration policy (upstream `USER_SELECT_*`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExplorationPolicy {
+    /// `first`
+    First,
+    /// `last`
+    Last,
+    /// `random-uniform`
+    RandomUniform,
+    /// `softmax` (upstream default)
+    Softmax,
+    /// `epsilon-greedy`
+    EpsilonGreedy,
+    /// `boltzmann`
+    Boltzmann,
+}
 
-    // 2. Collect acceptable candidates not in rejected list
-    let mut candidates: Vec<SymbolId> = state_prefs
-        .iter()
-        .filter(|p| p.preference_type == PreferenceType::Acceptable)
-        .map(|p| p.operator)
-        .filter(|op| !rejected.contains(op))
-        .collect();
+/// How several numeric-indifferent values for one candidate combine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumericIndifferentMode {
+    /// Upstream default.
+    Sum,
+    /// Average.
+    Avg,
+}
 
-    candidates.dedup();
+/// Exploration settings and random state used to choose among indifferent candidates.
+#[derive(Debug, Clone)]
+pub struct Exploration {
+    /// Selection policy; upstream defaults to softmax.
+    pub policy: ExplorationPolicy,
+    /// Epsilon for epsilon-greedy; upstream default 0.1.
+    pub epsilon: f64,
+    /// Temperature for Boltzmann; upstream default 25.
+    pub temperature: f64,
+    /// Numeric-indifferent combination; upstream default sum.
+    pub numeric_indifferent_mode: NumericIndifferentMode,
+    /// Random source. Upstream seeds from the clock; this seeds with 0 so runs are
+    /// reproducible. Re-seed with [`MtRand::seed`] (upstream `srand`).
+    pub rng: MtRand,
+}
 
-    if candidates.is_empty() {
-        return DecisionResult::NoChangeImpasse;
+impl Default for Exploration {
+    fn default() -> Self {
+        Self {
+            policy: ExplorationPolicy::Softmax,
+            epsilon: 0.1,
+            temperature: 25.0,
+            numeric_indifferent_mode: NumericIndifferentMode::Sum,
+            rng: MtRand::new(0),
+        }
+    }
+}
+
+fn number(symbols: &SymbolTable, symbol: SymbolId) -> f64 {
+    symbols.number(symbol).unwrap_or(0.0)
+}
+
+impl Exploration {
+    /// Upstream `exploration_compute_value_of_candidate` (default value 0): the candidate's
+    /// value, summing numeric then binary indifferents as upstream does, and whether an RL rule
+    /// made one of its numeric indifferents. `from_rl_rule[i]` marks `prefs[i]`; it may be empty.
+    fn value_of(&self, candidate: SymbolId, prefs: &[Preference], from_rl_rule: &[bool], symbols: &SymbolTable) -> (f64, bool) {
+        let mut total = 0usize;
+        let mut value = 0.0;
+        let mut rl_contribution = false;
+        for (i, p) in prefs.iter().enumerate().filter(|(_, p)| p.operator == candidate) {
+            if let PreferenceType::NumericIndifferent(r) = p.preference_type {
+                total += 1;
+                value += number(symbols, r);
+                rl_contribution |= from_rl_rule.get(i).copied().unwrap_or(false);
+            }
+        }
+        for p in prefs.iter().filter(|p| p.operator == candidate) {
+            if let PreferenceType::BinaryIndifferent(r) = p.preference_type {
+                total += 1;
+                value += number(symbols, r);
+            }
+        }
+        if total == 0 {
+            total = 1;
+        }
+        let value = match self.numeric_indifferent_mode {
+            NumericIndifferentMode::Sum => value,
+            NumericIndifferentMode::Avg => value / total as f64,
+        };
+        (value, rl_contribution)
     }
 
-    if candidates.len() == 1 {
-        return DecisionResult::Selected(candidates[0]);
+    fn randomly_select(&mut self, candidates: &[SymbolId]) -> SymbolId {
+        let index = self.rng.rand_int_max(candidates.len() as u32 - 1) as usize;
+        candidates[index]
     }
 
-    let explicitly_dominated: Vec<SymbolId> = state_prefs
+    /// Upstream `exploration_choose_according_to_policy`, with learning off.
+    pub fn choose(&mut self, candidates: &[SymbolId], prefs: &[Preference], symbols: &SymbolTable) -> SymbolId {
+        let values: Vec<f64> = candidates.iter().map(|c| self.value_of(*c, prefs, &[], symbols).0).collect();
+        self.select(candidates, &values)
+    }
+
+    /// Upstream `exploration_choose_according_to_policy`: selects a candidate and, with a
+    /// learning policy, works out the RL update upstream makes after selecting.
+    fn choose_and_learn(
+        &mut self,
+        candidates: &[SymbolId],
+        prefs: &[Preference],
+        from_rl_rule: &[bool],
+        learning: Option<LearningPolicy>,
+        symbols: &SymbolTable,
+    ) -> (SymbolId, Option<RlChoice>) {
+        let scored: Vec<(f64, bool)> = candidates.iter().map(|c| self.value_of(*c, prefs, from_rl_rule, symbols)).collect();
+        let values: Vec<f64> = scored.iter().map(|s| s.0).collect();
+        let chosen = self.select(candidates, &values);
+        let Some(policy) = learning else { return (chosen, None) };
+        let index = candidates.iter().position(|c| *c == chosen).unwrap_or(0);
+        let (selected_value, selected_rl) = scored[index];
+        let choice = match policy {
+            LearningPolicy::Sarsa => RlChoice { update_value: selected_value, update_rl: selected_rl, selected_value, watkins_clear: false },
+            LearningPolicy::QLearning => {
+                // The first candidate with the highest value.
+                let (mut top_value, mut top_rl) = scored[0];
+                for &(value, rl) in &scored {
+                    if value > top_value {
+                        top_value = value;
+                        top_rl = rl;
+                    }
+                }
+                RlChoice { update_value: top_value, update_rl: top_rl, selected_value, watkins_clear: selected_value != top_value }
+            }
+        };
+        (chosen, Some(choice))
+    }
+
+    fn select(&mut self, candidates: &[SymbolId], values: &[f64]) -> SymbolId {
+        match self.policy {
+            ExplorationPolicy::First => candidates[0],
+            ExplorationPolicy::Last => candidates[candidates.len() - 1],
+            ExplorationPolicy::RandomUniform => self.randomly_select(candidates),
+            ExplorationPolicy::Softmax => {
+                // Upstream `exploration_probabilistically_select`.
+                let total: f64 = values.iter().filter(|v| **v > 0.0).sum();
+                if total == 0.0 {
+                    return self.randomly_select(candidates);
+                }
+                let selected = total * self.rng.rand();
+                let mut sum = 0.0;
+                let mut last_positive = candidates[0];
+                for (c, v) in candidates.iter().zip(values) {
+                    if *v > 0.0 {
+                        sum += v;
+                        last_positive = *c;
+                        if selected <= sum {
+                            return *c;
+                        }
+                    }
+                }
+                last_positive
+            }
+            ExplorationPolicy::EpsilonGreedy => {
+                if self.rng.rand() < self.epsilon {
+                    return self.randomly_select(candidates);
+                }
+                // Upstream `exploration_get_highest_q_value_pref`.
+                let mut top = values[0];
+                let mut top_index = 0;
+                let mut count = 0u32;
+                for (i, v) in values.iter().enumerate() {
+                    if *v > top {
+                        top = *v;
+                        top_index = i;
+                        count = 1;
+                    } else if *v == top {
+                        count += 1;
+                    }
+                }
+                if count == 1 {
+                    return candidates[top_index];
+                }
+                let mut chosen = self.rng.rand_int_max(count - 1);
+                for (c, v) in candidates.iter().zip(values) {
+                    if *v == top {
+                        if chosen == 0 {
+                            return *c;
+                        }
+                        chosen -= 1;
+                    }
+                }
+                candidates[top_index]
+            }
+            ExplorationPolicy::Boltzmann => {
+                let max = values.iter().copied().fold(values[0], f64::max);
+                let exps: Vec<f64> = values.iter().map(|v| libm::exp((v - max) / self.temperature)).collect();
+                let total: f64 = exps.iter().sum();
+                let r = self.rng.rand_max(total);
+                let mut sum = 0.0;
+                for (c, e) in candidates.iter().zip(&exps) {
+                    sum += e;
+                    if sum >= r {
+                        return *c;
+                    }
+                }
+                candidates[candidates.len() - 1]
+            }
+        }
+    }
+}
+
+
+/// Values of preferences of a given kind, in slot-list order.
+fn values_of<'a>(prefs: &'a [Preference], kind: impl Fn(&PreferenceType) -> bool + 'a) -> impl Iterator<Item = SymbolId> + 'a {
+    prefs.iter().filter(move |p| kind(&p.preference_type)).map(|p| p.operator)
+}
+
+/// Upstream builds candidate lists by prepending each new (unmarked) value while walking a
+/// preference list, so the result is the distinct values in reverse order.
+fn prepend_distinct(values: impl Iterator<Item = SymbolId>, eligible: impl Fn(SymbolId) -> bool) -> Vec<SymbolId> {
+    let mut seen: Vec<SymbolId> = Vec::new();
+    for v in values {
+        if eligible(v) && !seen.contains(&v) {
+            seen.push(v);
+        }
+    }
+    seen.reverse();
+    seen
+}
+
+/// Upstream `run_preference_semantics` for a context (operator) slot.
+///
+/// `prefs` are the slot's preferences in upstream's per-type list order (ascending match-goal
+/// level, newest first within a level). With `consistency` set, indifferent candidates are all
+/// returned rather than one being chosen, as in upstream's consistency check.
+///
+/// With `learning` set (and outside the consistency check), a decision with a winner also
+/// reports the reinforcement-learning update upstream makes (`rl_update_for_one_candidate`, or
+/// the update after exploration). `from_rl_rule[i]` marks preferences made by RL rules.
+pub fn run_preference_semantics(
+    prefs: &[Preference],
+    from_rl_rule: &[bool],
+    consistency: bool,
+    learning: Option<LearningPolicy>,
+    exploration: &mut Exploration,
+    symbols: &SymbolTable,
+) -> Semantics {
+    use PreferenceType as P;
+    let learning = if consistency { None } else { learning };
+    // Upstream `rl_update_for_one_candidate` at each exit with a single winner.
+    let done = |candidates: Vec<SymbolId>| {
+        let rl = match (learning, candidates.as_slice()) {
+            (Some(_), [winner]) => {
+                let (value, rl) = exploration.value_of(*winner, prefs, from_rl_rule, symbols);
+                Some(RlChoice { update_value: value, update_rl: rl, selected_value: value, watkins_clear: false })
+            }
+            _ => None,
+        };
+        Semantics { impasse: None, candidates, rl }
+    };
+
+    // === Requires ===
+    if prefs.iter().any(|p| p.preference_type == P::Require) {
+        let candidates = prepend_distinct(values_of(prefs, |t| *t == P::Require), |_| true);
+        if candidates.len() > 1 {
+            return Semantics { impasse: Some(ImpasseType::ConstraintFailure), candidates, rl: None };
+        }
+        if values_of(prefs, |t| *t == P::Prohibit).any(|v| v == candidates[0]) {
+            return Semantics { impasse: Some(ImpasseType::ConstraintFailure), candidates, rl: None };
+        }
+        return done(candidates);
+    }
+
+    // === Acceptables, prohibits, rejects ===
+    let excluded: Vec<SymbolId> = values_of(prefs, |t| matches!(t, P::Prohibit | P::Reject)).collect();
+    let mut candidates = prepend_distinct(values_of(prefs, |t| *t == P::Acceptable), |v| !excluded.contains(&v));
+    if candidates.len() <= 1 {
+        return done(candidates);
+    }
+
+    // === Better / worse ===
+    let binary: Vec<(SymbolId, SymbolId, bool)> = prefs
         .iter()
-        .filter_map(|pref| match pref.preference_type {
-            PreferenceType::Better(other) if candidates.contains(&other) => Some(other),
-            PreferenceType::Worse(other) if candidates.contains(&other) => Some(pref.operator),
+        .filter_map(|p| match p.preference_type {
+            P::Better(r) => Some((p.operator, r, true)),
+            P::Worse(r) => Some((p.operator, r, false)),
             _ => None,
         })
         .collect();
-
-    candidates.retain(|op| !explicitly_dominated.contains(op));
-
-    if candidates.is_empty() {
-        return DecisionResult::ConflictImpasse(
-            state_prefs
-                .iter()
-                .filter(|p| p.preference_type == PreferenceType::Acceptable)
-                .map(|p| p.operator)
-                .collect(),
-        );
-    }
-
-    if candidates.len() == 1 {
-        return DecisionResult::Selected(candidates[0]);
-    }
-
-    // 3. Multi-candidate tie-breaking using RL Q-values Q(s, a)
-    let mut max_q = f32::NEG_INFINITY;
-    let mut best_candidates = Vec::new();
-
-    for &op in &candidates {
-        let q = rl.get_q_value(state_id, op);
-        if q > max_q + 1e-6 {
-            max_q = q;
-            best_candidates.clear();
-            best_candidates.push(op);
-        } else if (q - max_q).abs() <= 1e-6 {
-            best_candidates.push(op);
+    if !binary.is_empty() {
+        #[derive(Clone, Copy, PartialEq)]
+        enum Flag {
+            Nothing,
+            Candidate,
+            Conflicted,
+        }
+        let mut flags: Vec<(SymbolId, Flag)> = Vec::new();
+        let flag = |flags: &Vec<(SymbolId, Flag)>, s: SymbolId| {
+            flags.iter().rev().find(|(v, _)| *v == s).map_or(Flag::Nothing, |(_, f)| *f)
+        };
+        for c in &candidates {
+            flags.push((*c, Flag::Candidate));
+        }
+        // Upstream walks the better list then the worse list, marking as it goes, so the
+        // result depends on list order exactly as here.
+        for better in [true, false] {
+            for &(j, k, is_better) in binary.iter().filter(|b| b.2 == better) {
+                if j == k {
+                    continue;
+                }
+                let (fj, fk) = (flag(&flags, j), flag(&flags, k));
+                if fj != Flag::Nothing && fk != Flag::Nothing && (fj == Flag::Candidate || fk == Flag::Candidate) {
+                    flags.push((if is_better { k } else { j }, Flag::Conflicted));
+                }
+            }
+        }
+        if !candidates.iter().any(|c| flag(&flags, *c) == Flag::Candidate) {
+            candidates.retain(|c| flag(&flags, *c) == Flag::Conflicted);
+            return Semantics { impasse: Some(ImpasseType::Conflict), candidates, rl: None };
+        }
+        candidates.retain(|c| flag(&flags, *c) != Flag::Conflicted);
+        if candidates.len() <= 1 {
+            return done(candidates);
         }
     }
 
-    if best_candidates.len() == 1 {
-        DecisionResult::Selected(best_candidates[0])
-    } else {
-        DecisionResult::TieImpasse(best_candidates)
+    // === Bests ===
+    let best: Vec<SymbolId> = values_of(prefs, |t| *t == P::Best).collect();
+    if !best.is_empty() && candidates.iter().any(|c| best.contains(c)) {
+        candidates.retain(|c| best.contains(c));
+    }
+    if candidates.len() <= 1 {
+        return done(candidates);
+    }
+
+    // === Worsts ===
+    let worst: Vec<SymbolId> = values_of(prefs, |t| *t == P::Worst).collect();
+    if !worst.is_empty() && candidates.iter().any(|c| !worst.contains(c)) {
+        candidates.retain(|c| !worst.contains(c));
+    }
+    if candidates.len() <= 1 {
+        return done(candidates);
+    }
+
+    // === Indifferents ===
+    let unary: Vec<SymbolId> = values_of(prefs, |t| *t == P::Indifferent).collect();
+    let numeric: Vec<SymbolId> = values_of(prefs, |t| matches!(t, P::NumericIndifferent(_))).collect();
+    let binary_indifferent: Vec<(SymbolId, SymbolId)> = prefs
+        .iter()
+        .filter_map(|p| match p.preference_type {
+            P::BinaryIndifferent(r) => Some((p.operator, r)),
+            _ => None,
+        })
+        .collect();
+    let all_indifferent = candidates.iter().all(|&c| {
+        // Numeric marks win over unary marks, as upstream sets them second.
+        if numeric.contains(&c) || unary.contains(&c) {
+            return true;
+        }
+        candidates.iter().filter(|&&o| o != c).all(|&o| {
+            binary_indifferent.iter().any(|&(v, r)| (v == c && r == o) || (v == o && r == c))
+        })
+    });
+    if all_indifferent {
+        if consistency {
+            return done(candidates);
+        }
+        let (chosen, rl) = exploration.choose_and_learn(&candidates, prefs, from_rl_rule, learning, symbols);
+        return Semantics { impasse: None, candidates: alloc::vec![chosen], rl };
+    }
+    Semantics { impasse: Some(ImpasseType::Tie), candidates, rl: None }
+}
+
+/// Decides one state's operator preferences in isolation, with default exploration settings.
+/// `preferences` are in assertion order; they all count as the same goal level.
+pub fn resolve_preferences(state_id: SymbolId, preferences: &[Preference]) -> DecisionResult {
+    // Upstream keeps the newest preference first within a level.
+    let mut prefs: Vec<Preference> = preferences.iter().filter(|p| p.state == state_id).cloned().collect();
+    prefs.reverse();
+    let symbols = SymbolTable::new();
+    let semantics = run_preference_semantics(&prefs, &[], false, None, &mut Exploration::default(), &symbols);
+    decision_result(semantics)
+}
+
+/// Converts preference semantics into a [`DecisionResult`].
+pub fn decision_result(semantics: Semantics) -> DecisionResult {
+    match (semantics.impasse, semantics.candidates.as_slice()) {
+        (None, []) => DecisionResult::NoChangeImpasse,
+        (None, [only, ..]) => DecisionResult::Selected(*only),
+        (Some(ImpasseType::Tie), _) => DecisionResult::TieImpasse(semantics.candidates),
+        (Some(ImpasseType::Conflict), _) => DecisionResult::ConflictImpasse(semantics.candidates),
+        (Some(ImpasseType::ConstraintFailure), _) => DecisionResult::ConstraintFailureImpasse(semantics.candidates),
+        (Some(ImpasseType::NoChange), _) => DecisionResult::NoChangeImpasse,
     }
 }
 
@@ -133,40 +487,68 @@ mod tests {
     use super::*;
     use alloc::vec;
 
+    fn p(op: u32, t: PreferenceType) -> Preference {
+        Preference { state: SymbolId(1), operator: SymbolId(op), preference_type: t }
+    }
+
+    fn run(prefs: &[Preference]) -> Semantics {
+        run_preference_semantics(prefs, &[], false, None, &mut Exploration::default(), &SymbolTable::new())
+    }
+
+    use PreferenceType::*;
+
     #[test]
-    fn test_rl_tie_breaking() {
-        let s1 = SymbolId(1);
-        let o1 = SymbolId(10);
-        let o2 = SymbolId(20);
+    fn two_acceptables_without_indifference_tie() {
+        let s = run(&[p(10, Acceptable), p(20, Acceptable)]);
+        assert_eq!(s.impasse, Some(ImpasseType::Tie));
+        // Candidate lists are built by prepending, so they come out reversed.
+        assert_eq!(s.candidates, vec![SymbolId(20), SymbolId(10)]);
+    }
 
-        let prefs = vec![
-            Preference {
-                state: s1,
-                operator: o1,
-                preference_type: PreferenceType::Acceptable,
-            },
-            Preference {
-                state: s1,
-                operator: o2,
-                preference_type: PreferenceType::Acceptable,
-            },
-        ];
+    #[test]
+    fn require_with_prohibit_is_a_constraint_failure() {
+        let s = run(&[p(10, Require), p(10, Prohibit), p(20, Acceptable)]);
+        assert_eq!(s.impasse, Some(ImpasseType::ConstraintFailure));
+        let s = run(&[p(10, Require), p(20, Require)]);
+        assert_eq!(s.impasse, Some(ImpasseType::ConstraintFailure));
+    }
 
-        let mut rl = ReinforcementLearning::default();
+    #[test]
+    fn better_cycle_is_a_conflict_of_the_cycle_members() {
+        let s = run(&[
+            p(10, Acceptable),
+            p(20, Acceptable),
+            p(10, Better(SymbolId(20))),
+            p(20, Better(SymbolId(10))),
+        ]);
+        assert_eq!(s.impasse, Some(ImpasseType::Conflict));
+        assert_eq!(s.candidates.len(), 2);
+    }
 
-        // With zero Q-values, both remain tied
-        assert_eq!(
-            resolve_preferences_with_rl(s1, &prefs, &rl),
-            DecisionResult::TieImpasse(vec![o1, o2])
-        );
+    #[test]
+    fn unary_indifference_selects_one() {
+        let s = run(&[p(10, Acceptable), p(20, Acceptable), p(10, Indifferent), p(20, Indifferent)]);
+        assert_eq!(s.impasse, None);
+        assert_eq!(s.candidates.len(), 1);
+    }
 
-        // Update Q-value for O1
-        rl.set_q_value(s1, o1, 5.0);
+    #[test]
+    fn worst_only_removes_when_something_else_remains() {
+        let s = run(&[p(10, Acceptable), p(10, Worst)]);
+        assert_eq!(s.candidates, vec![SymbolId(10)]);
+        let s = run(&[p(10, Acceptable), p(20, Acceptable), p(10, Worst)]);
+        assert_eq!(s.candidates, vec![SymbolId(20)]);
+    }
 
-        // O1 should now be selected automatically
-        assert_eq!(
-            resolve_preferences_with_rl(s1, &prefs, &rl),
-            DecisionResult::Selected(o1)
-        );
+    #[test]
+    fn softmax_follows_numeric_values() {
+        let mut symbols = SymbolTable::new();
+        let (zero, one) = (symbols.intern_float(0.0), symbols.intern_float(1.0));
+        let prefs = [p(10, Acceptable), p(20, Acceptable), p(10, NumericIndifferent(zero)), p(20, NumericIndifferent(one))];
+        let mut exploration = Exploration::default();
+        for _ in 0..20 {
+            let s = run_preference_semantics(&prefs, &[], false, None, &mut exploration, &symbols);
+            assert_eq!(s.candidates, vec![SymbolId(20)], "only the positive value can be chosen");
+        }
     }
 }

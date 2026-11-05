@@ -12,4 +12,5 @@ build = "build.rs"
 [dependencies]
 hashbrown = { workspace = true }
 heapless = "0.9.3"
+libm = "0.2"
 slotmap = { workspace = true }

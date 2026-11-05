@@ -38,22 +38,22 @@ fn main() {
         ),
     ];
 
-    agent.rete.add_rule("detect-active-sensor", rule_conditions);
+    agent.rete.add_rule("detect-active-sensor", rule_conditions, &agent.symbols).expect("capacity");
 
-    println!("Initial activations: {}", agent.rete.activations.len());
+    println!("Initial activations: {}", agent.rete.pending_assertions());
 
     // 3. Insert WME 1
     println!("Inserting WME 1: (S1 ^type sensor)");
     agent.insert_wme(s1, attr_type, val_sensor);
-    println!("Activations after WME 1: {}", agent.rete.activations.len());
+    println!("Activations after WME 1: {}", agent.rete.pending_assertions());
 
     // 4. Insert WME 2 (Completes the Beta Join)
     println!("Inserting WME 2: (S1 ^status active)");
     agent.insert_wme(s1, attr_status, val_active);
 
     println!("\n--- RETE Match Complete ---");
-    println!("Total Activations: {}", agent.rete.activations.len());
-    for inst in &agent.rete.activations {
+    println!("Total Activations: {}", agent.rete.pending_assertions());
+    for inst in agent.rete.take_assertions() {
         println!("Fired Production: '{}'", inst.rule_name);
         println!("Matched WME Count: {}", inst.matched_wmes.len());
     }

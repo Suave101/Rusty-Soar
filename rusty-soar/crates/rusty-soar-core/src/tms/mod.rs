@@ -72,6 +72,28 @@ impl TruthMaintenanceSystem {
         wmes_to_retract
     }
 
+    /// Removes the justification of a retracted rule match and returns the WMEs it derived
+    /// that no other justification still supports.
+    pub fn retract_justification(&mut self, rule_name: &str, supporting_wmes: &[WmeKey]) -> Vec<WmeKey> {
+        let Some(index) = self
+            .justifications
+            .iter()
+            .position(|j| j.rule_name == rule_name && j.supporting_wmes == supporting_wmes)
+        else {
+            return Vec::new();
+        };
+        let just = self.justifications.remove(index);
+        just.derived_wmes
+            .into_iter()
+            .filter(|derived| {
+                !self
+                    .justifications
+                    .iter()
+                    .any(|remaining| remaining.derived_wmes.contains(derived))
+            })
+            .collect()
+    }
+
     /// Returns the total number of active justifications tracked by the TMS.
     pub fn active_justifications_count(&self) -> usize {
         self.justifications.len()
